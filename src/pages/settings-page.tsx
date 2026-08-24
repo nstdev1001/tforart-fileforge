@@ -4,6 +4,8 @@ import { useState } from "react";
 import { useForm } from "react-hook-form";
 import { z } from "zod";
 
+import { GoogleDriveSettings } from "@/components/google/google-drive-settings";
+import { SevenZipSettings } from "@/components/settings/seven-zip-settings";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -39,6 +41,9 @@ export function SettingsPage() {
 
   return (
     <form className="mx-auto max-w-4xl space-y-5" onSubmit={handleSubmit(saveSettings)}>
+      <GoogleDriveSettings />
+      <SevenZipSettings />
+
       <Card>
         <CardHeader className="flex-row items-start gap-3 border-b border-border/70">
           <Palette className="mt-0.5 size-5 text-primary" />

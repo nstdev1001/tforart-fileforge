@@ -1,6 +1,7 @@
 import { ClipboardList, Plus } from "lucide-react";
 import { useState } from "react";
 
+import { NewCompressUploadForm } from "@/components/tasks/new-compress-upload-form";
 import { TaskCard } from "@/components/tasks/task-card";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -12,10 +13,12 @@ type Filter = "all" | TaskStatus;
 export function TasksPage() {
   const tasks = useAppStore((state) => state.tasks);
   const [filter, setFilter] = useState<Filter>("all");
+  const [showNewTask, setShowNewTask] = useState(false);
   const filteredTasks = filter === "all" ? tasks : tasks.filter((task) => task.status === filter);
 
   return (
     <div className="space-y-5">
+      {showNewTask ? <NewCompressUploadForm onClose={() => setShowNewTask(false)} /> : null}
       <div className="flex items-center justify-between gap-3">
         <div className="flex flex-wrap gap-1 rounded-xl border border-border bg-card p-1">
           {(["all", ...TASK_STATUSES] as Filter[]).map((status) => (
@@ -24,7 +27,7 @@ export function TasksPage() {
             </button>
           ))}
         </div>
-        <Button><Plus className="size-4" /> New task</Button>
+        <Button onClick={() => setShowNewTask(true)}><Plus className="size-4" /> New task</Button>
       </div>
 
       {filteredTasks.length ? (
@@ -41,4 +44,3 @@ export function TasksPage() {
     </div>
   );
 }
-

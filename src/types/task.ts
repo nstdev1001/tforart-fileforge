@@ -8,12 +8,20 @@ export const TASK_STATUSES = [
 
 export type TaskStatus = (typeof TASK_STATUSES)[number];
 export type TaskKind = "compress-upload" | "download-extract" | "watch-upload";
+export type TaskStage =
+  | "queued"
+  | "compressing"
+  | "uploading"
+  | "sharing"
+  | "completed"
+  | "failed";
 
 export interface Task {
   id: string;
   name: string;
   kind: TaskKind;
   status: TaskStatus;
+  stage: TaskStage;
   sourcePath: string;
   destinationPath?: string;
   progress: number;
@@ -23,6 +31,8 @@ export interface Task {
   etaSeconds?: number;
   retryCount: number;
   errorMessage?: string;
+  driveFileId?: string;
+  driveWebViewLink?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -35,3 +45,11 @@ export const taskStatusLabel: Record<TaskStatus, string> = {
   completed: "Completed",
 };
 
+export const taskStageLabel: Record<TaskStage, string> = {
+  queued: "Waiting",
+  compressing: "Compressing",
+  uploading: "Uploading",
+  sharing: "Creating share link",
+  completed: "Complete",
+  failed: "Failed",
+};

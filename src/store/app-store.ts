@@ -14,6 +14,7 @@ interface AppState {
   setActiveView: (view: AppView) => void;
   toggleSidebar: () => void;
   setTheme: (theme: Theme) => void;
+  setTasks: (tasks: Task[]) => void;
   upsertTask: (task: Task) => void;
 }
 
@@ -28,6 +29,7 @@ export const useAppStore = create<AppState>()(
       toggleSidebar: () =>
         set((state) => ({ sidebarCollapsed: !state.sidebarCollapsed })),
       setTheme: (theme) => set({ theme }),
+      setTasks: (tasks) => set({ tasks }),
       upsertTask: (task) =>
         set((state) => {
           const exists = state.tasks.some((item) => item.id === task.id);
@@ -47,4 +49,3 @@ export const useAppStore = create<AppState>()(
     },
   ),
 );
-

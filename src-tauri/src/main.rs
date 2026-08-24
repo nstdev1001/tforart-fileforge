@@ -3,4 +3,3 @@
 fn main() {
     fileforge_lib::run();
 }
-

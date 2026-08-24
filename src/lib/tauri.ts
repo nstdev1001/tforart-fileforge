@@ -1,6 +1,29 @@
 import { invoke } from "@tauri-apps/api/core";
 
+import type {
+  DriveConnection,
+  DriveFile,
+  DriveFilePage,
+  DriveWebViewLink,
+  GoogleAuthStatus,
+  OAuthLoginResult,
+} from "@/types/drive";
 import type { DatabaseHealth, DiskSpace } from "@/types/system";
+import type { Task } from "@/types/task";
+
+export interface SevenZipStatus {
+  available: boolean;
+  path?: string;
+  version?: string;
+  source?: string;
+}
+
+export interface StartCompressUploadRequest {
+  sourcePath: string;
+  driveFolderId: string;
+  archiveName?: string;
+  makePublic: boolean;
+}
 
 export async function pickFolder(): Promise<string | null> {
   return invoke<string | null>("pick_folder");
@@ -14,3 +37,62 @@ export async function getDatabaseHealth(): Promise<DatabaseHealth> {
   return invoke<DatabaseHealth>("get_database_health");
 }
 
+export async function getGoogleAuthStatus(): Promise<GoogleAuthStatus> {
+  return invoke<GoogleAuthStatus>("google_auth_status");
+}
+
+export async function connectGoogleDrive(): Promise<OAuthLoginResult> {
+  return invoke<OAuthLoginResult>("google_oauth_login");
+}
+
+export async function disconnectGoogleDrive(): Promise<void> {
+  return invoke<void>("google_oauth_logout");
+}
+
+export async function testGoogleDriveConnection(): Promise<DriveConnection> {
+  return invoke<DriveConnection>("google_drive_test_connection");
+}
+
+export async function listGoogleDriveFolder(
+  folderId?: string,
+  pageToken?: string,
+): Promise<DriveFilePage> {
+  return invoke<DriveFilePage>("google_drive_list_folder", {
+    folderId: folderId ?? null,
+    pageToken: pageToken ?? null,
+  });
+}
+
+export async function getGoogleDriveMetadata(fileId: string): Promise<DriveFile> {
+  return invoke<DriveFile>("google_drive_get_metadata", { fileId });
+}
+
+export async function getGoogleDriveWebViewLink(fileId: string): Promise<DriveWebViewLink> {
+  return invoke<DriveWebViewLink>("google_drive_get_web_view_link", { fileId });
+}
+
+export async function getSevenZipStatus(): Promise<SevenZipStatus> {
+  return invoke<SevenZipStatus>("get_7zip_status");
+}
+
+export async function setSevenZipPath(path: string): Promise<SevenZipStatus> {
+  return invoke<SevenZipStatus>("set_7zip_path", { path });
+}
+
+export async function listTasks(): Promise<Task[]> {
+  return invoke<Task[]>("list_tasks");
+}
+
+export async function startCompressUpload(
+  request: StartCompressUploadRequest,
+): Promise<Task> {
+  return invoke<Task>("start_compress_upload", { request });
+}
+
+export async function pauseTask(taskId: string): Promise<Task> {
+  return invoke<Task>("pause_task", { taskId });
+}
+
+export async function resumeTask(taskId: string): Promise<Task> {
+  return invoke<Task>("resume_task", { taskId });
+}

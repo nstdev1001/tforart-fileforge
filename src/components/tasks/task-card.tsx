@@ -1,6 +1,7 @@
 import {
   Archive,
   Check,
+  Copy,
   CircleAlert,
   Clock3,
   Download,
@@ -11,13 +12,16 @@ import {
   RotateCcw,
   UploadCloud,
 } from "lucide-react";
+import { useState } from "react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { cn, formatBytes, formatRelativeTime } from "@/lib/utils";
-import { taskStatusLabel, type Task, type TaskStatus } from "@/types/task";
+import { pauseTask, resumeTask } from "@/lib/tauri";
+import { useAppStore } from "@/store/app-store";
+import { taskStageLabel, taskStatusLabel, type Task, type TaskStatus } from "@/types/task";
 
 const statusAppearance: Record<
   TaskStatus,
@@ -37,10 +41,25 @@ const kindIcon = {
 };
 
 export function TaskCard({ task }: { task: Task }) {
+  const [controlBusy, setControlBusy] = useState(false);
+  const upsertTask = useAppStore((state) => state.upsertTask);
   const appearance = statusAppearance[task.status];
   const StatusIcon = appearance.icon;
   const KindIcon = kindIcon[task.kind] ?? Archive;
   const displayProgress = task.status === "completed" ? 100 : task.progress;
+
+  async function togglePause() {
+    setControlBusy(true);
+    try {
+      upsertTask(task.status === "paused" ? await resumeTask(task.id) : await pauseTask(task.id));
+    } finally {
+      setControlBusy(false);
+    }
+  }
+
+  async function copyShareLink() {
+    if (task.driveWebViewLink) await navigator.clipboard.writeText(task.driveWebViewLink);
+  }
 
   return (
     <Card className="p-4 transition-all hover:-translate-y-0.5 hover:border-primary/25 hover:shadow-md">
@@ -53,7 +72,7 @@ export function TaskCard({ task }: { task: Task }) {
             <div className="min-w-0">
               <h3 className="truncate text-sm font-semibold">{task.name}</h3>
               <p className="mt-1 truncate text-[11px] text-muted-foreground" title={task.sourcePath}>
-                {task.sourcePath}
+                {task.sourcePath} · {taskStageLabel[task.stage]}
               </p>
             </div>
             <div className="flex shrink-0 items-center gap-1.5">
@@ -91,9 +110,23 @@ export function TaskCard({ task }: { task: Task }) {
             </div>
             <span>{formatRelativeTime(task.updatedAt)}</span>
           </div>
+          {(task.status === "running" || task.status === "paused" || task.driveWebViewLink) ? (
+            <div className="mt-3 flex justify-end gap-2 border-t border-border/60 pt-3">
+              {task.driveWebViewLink ? (
+                <Button variant="outline" size="sm" className="h-7" onClick={copyShareLink}>
+                  <Copy className="size-3" /> Copy link
+                </Button>
+              ) : null}
+              {task.status === "running" || task.status === "paused" ? (
+                <Button variant="outline" size="sm" className="h-7" disabled={controlBusy} onClick={togglePause}>
+                  {task.status === "paused" ? <Play className="size-3" /> : <Pause className="size-3" />}
+                  {task.status === "paused" ? "Resume" : "Pause"}
+                </Button>
+              ) : null}
+            </div>
+          ) : null}
         </div>
       </div>
     </Card>
   );
 }
-

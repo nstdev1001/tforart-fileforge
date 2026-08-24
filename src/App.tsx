@@ -1,5 +1,6 @@
 import { AppShell } from "@/components/layout/app-shell";
 import { useTheme } from "@/hooks/use-theme";
+import { useTaskEvents } from "@/hooks/use-task-events";
 import { DashboardPage } from "@/pages/dashboard-page";
 import { HistoryPage } from "@/pages/history-page";
 import { SettingsPage } from "@/pages/settings-page";
@@ -17,9 +18,9 @@ const views = {
 
 export default function App() {
   useTheme();
+  useTaskEvents();
   const activeView = useAppStore((state) => state.activeView);
   const ActivePage = views[activeView];
 
   return <AppShell><ActivePage /></AppShell>;
 }
-

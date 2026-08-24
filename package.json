@@ -10,9 +10,9 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "check": "npm run test && npm run build",
-    "tauri": "tauri",
-    "tauri:dev": "tauri dev",
-    "tauri:build": "tauri build"
+    "tauri": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run-tauri.ps1",
+    "tauri:dev": "npm run tauri -- dev",
+    "tauri:build": "npm run tauri -- build"
   },
   "dependencies": {
     "@hookform/resolvers": "^5.2.1",
@@ -44,4 +44,3 @@
     "vitest": "^3.2.4"
   }
 }
-

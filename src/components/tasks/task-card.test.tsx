@@ -10,6 +10,7 @@ function createTask(status: TaskStatus): Task {
     name: `${taskStatusLabel[status]} example`,
     kind: "compress-upload",
     status,
+    stage: status === "completed" ? "completed" : status === "failed" ? "failed" : "queued",
     sourcePath: "C:\\Projects\\example",
     progress: status === "completed" ? 100 : 42,
     bytesProcessed: 42 * 1024,
@@ -33,4 +34,3 @@ describe("TaskCard", () => {
     );
   });
 });
-
