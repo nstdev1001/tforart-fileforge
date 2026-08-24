@@ -9,7 +9,7 @@ import type {
   OAuthLoginResult,
 } from "@/types/drive";
 import type { DatabaseHealth, DiskSpace } from "@/types/system";
-import type { Task } from "@/types/task";
+import type { Task, TaskLog, WorkerPoolConfig } from "@/types/task";
 
 export interface SevenZipStatus {
   available: boolean;
@@ -87,6 +87,18 @@ export async function setSevenZipPath(path: string): Promise<SevenZipStatus> {
 
 export async function listTasks(): Promise<Task[]> {
   return invoke<Task[]>("list_tasks");
+}
+
+export async function listTaskLogs(taskId: string): Promise<TaskLog[]> {
+  return invoke<TaskLog[]>("list_task_logs", { taskId });
+}
+
+export async function getWorkerPoolConfig(): Promise<WorkerPoolConfig> {
+  return invoke<WorkerPoolConfig>("get_worker_pool_config");
+}
+
+export async function setWorkerPoolConfig(concurrentTasks: number): Promise<WorkerPoolConfig> {
+  return invoke<WorkerPoolConfig>("set_worker_pool_config", { concurrentTasks });
 }
 
 export async function startCompressUpload(

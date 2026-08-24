@@ -229,6 +229,7 @@ pub async fn download_file(
     file_id: &str,
     destination: &Path,
     total_bytes: u64,
+    resume_existing: bool,
     pause_gate: Arc<PauseGate>,
     on_event: Arc<dyn Fn(DownloadEvent) + Send + Sync>,
 ) -> Result<(), DriveError> {
@@ -236,11 +237,20 @@ pub async fn download_file(
     let url = format!("{DRIVE_API_BASE}/files/{file_id}");
     let mut output = OpenOptions::new()
         .create(true)
-        .truncate(true)
+        .truncate(!resume_existing)
         .write(true)
         .open(destination)
         .await?;
-    let mut offset = 0_u64;
+    let mut offset = if resume_existing {
+        output.metadata().await?.len()
+    } else {
+        0
+    };
+    if offset > total_bytes {
+        output.set_len(0).await?;
+        offset = 0;
+    }
+    output.seek(std::io::SeekFrom::Start(offset)).await?;
     let mut retry_count = 0_u32;
     let started_at = Instant::now();
 
@@ -395,27 +405,51 @@ pub async fn upload_zip_resumable(
     archive_path: &Path,
     upload_name: &str,
     drive_folder_id: &str,
+    existing_session_uri: Option<&str>,
     pause_gate: Arc<PauseGate>,
     on_event: Arc<dyn Fn(UploadEvent) + Send + Sync>,
 ) -> Result<DriveFile, DriveError> {
     validate_file_id(drive_folder_id)?;
     let total_bytes = tokio::fs::metadata(archive_path).await?.len();
-    let session_uri = initiate_resumable_upload(
-        http,
-        store,
-        refresh_lock,
-        upload_name,
-        drive_folder_id,
-        total_bytes,
-        pause_gate.clone(),
-        on_event.clone(),
-    )
-    .await?;
+    let (session_uri, mut offset) = if let Some(existing) = existing_session_uri {
+        match query_upload_status(http, existing, total_bytes).await {
+            Ok(UploadStatus::Incomplete(offset)) => (existing.to_owned(), offset),
+            Ok(UploadStatus::Complete(file)) => return Ok(file),
+            Err(DriveError::SessionExpired) => {
+                let session = initiate_resumable_upload(
+                    http,
+                    store,
+                    refresh_lock,
+                    upload_name,
+                    drive_folder_id,
+                    total_bytes,
+                    pause_gate.clone(),
+                    on_event.clone(),
+                )
+                .await?;
+                (session, 0)
+            }
+            Err(error) => return Err(error),
+        }
+    } else {
+        let session = initiate_resumable_upload(
+            http,
+            store,
+            refresh_lock,
+            upload_name,
+            drive_folder_id,
+            total_bytes,
+            pause_gate.clone(),
+            on_event.clone(),
+        )
+        .await?;
+        (session, 0)
+    };
     on_event(UploadEvent::SessionCreated(session_uri.clone()));
 
     let mut file = File::open(archive_path).await?;
     let started_at = Instant::now();
-    let mut offset = 0_u64;
+    emit_upload_progress(&on_event, offset, total_bytes, started_at);
 
     while offset < total_bytes {
         pause_gate.wait().await;

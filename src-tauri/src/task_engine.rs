@@ -2,24 +2,26 @@ use std::{
     collections::HashMap,
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc, Mutex as StdMutex,
     },
     time::Instant,
 };
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::{Notify, RwLock};
 use uuid::Uuid;
 
 use crate::{
-    database::{Database, TaskRecord, TaskUpdate},
+    database::{Database, LogRecord, RecoverableTask, TaskRecord, TaskUpdate},
     google::{parse_drive_file_id, DownloadEvent, GoogleService, UploadEvent},
     seven_zip,
 };
 
 const TEMP_SPACE_SAFETY_BYTES: u64 = 64 * 1024 * 1024;
+const MIN_CONCURRENCY: usize = 1;
+const MAX_CONCURRENCY: usize = 10;
 
 pub struct PauseGate {
     paused: AtomicBool,
@@ -34,6 +36,13 @@ impl PauseGate {
         }
     }
 
+    fn new_paused() -> Self {
+        Self {
+            paused: AtomicBool::new(true),
+            notify: Notify::new(),
+        }
+    }
+
     fn pause(&self) {
         self.paused.store(true, Ordering::SeqCst);
     }
@@ -43,9 +52,19 @@ impl PauseGate {
         self.notify.notify_waiters();
     }
 
+    fn is_paused(&self) -> bool {
+        self.paused.load(Ordering::SeqCst)
+    }
+
     pub async fn wait(&self) {
-        while self.paused.load(Ordering::SeqCst) {
-            self.notify.notified().await;
+        loop {
+            let notified = self.notify.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if !self.paused.load(Ordering::SeqCst) {
+                return;
+            }
+            notified.await;
         }
     }
 }
@@ -63,17 +82,88 @@ struct TaskControl {
 
 pub struct TaskEngine {
     controls: RwLock<HashMap<String, Arc<TaskControl>>>,
+    pool: Arc<WorkerPool>,
 }
 
 impl TaskEngine {
-    pub fn new() -> Self {
+    pub fn new(limit: usize) -> Self {
         Self {
             controls: RwLock::new(HashMap::new()),
+            pool: Arc::new(WorkerPool::new(limit)),
         }
     }
 }
 
-#[derive(Debug, Deserialize)]
+struct WorkerPool {
+    limit: AtomicUsize,
+    active: AtomicUsize,
+    notify: Notify,
+}
+
+impl WorkerPool {
+    fn new(limit: usize) -> Self {
+        Self {
+            limit: AtomicUsize::new(clamp_concurrency(limit)),
+            active: AtomicUsize::new(0),
+            notify: Notify::new(),
+        }
+    }
+
+    fn limit(&self) -> usize {
+        self.limit.load(Ordering::SeqCst)
+    }
+
+    fn active(&self) -> usize {
+        self.active.load(Ordering::SeqCst)
+    }
+
+    fn set_limit(&self, limit: usize) {
+        self.limit.store(clamp_concurrency(limit), Ordering::SeqCst);
+        self.notify.notify_waiters();
+    }
+
+    async fn acquire(self: &Arc<Self>) -> WorkerPermit {
+        loop {
+            let notified = self.notify.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            let active = self.active.load(Ordering::SeqCst);
+            if active < self.limit.load(Ordering::SeqCst)
+                && self
+                    .active
+                    .compare_exchange(active, active + 1, Ordering::SeqCst, Ordering::SeqCst)
+                    .is_ok()
+            {
+                return WorkerPermit { pool: self.clone() };
+            }
+            notified.await;
+        }
+    }
+}
+
+struct WorkerPermit {
+    pool: Arc<WorkerPool>,
+}
+
+impl Drop for WorkerPermit {
+    fn drop(&mut self) {
+        self.pool.active.fetch_sub(1, Ordering::SeqCst);
+        self.pool.notify.notify_waiters();
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkerPoolConfig {
+    concurrent_tasks: usize,
+    active_tasks: usize,
+}
+
+fn clamp_concurrency(value: usize) -> usize {
+    value.clamp(MIN_CONCURRENCY, MAX_CONCURRENCY)
+}
+
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StartCompressUploadRequest {
     source_path: String,
@@ -82,7 +172,7 @@ pub struct StartCompressUploadRequest {
     make_public: bool,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StartDownloadExtractRequest {
     drive_link_or_id: String,
@@ -93,6 +183,43 @@ pub struct StartDownloadExtractRequest {
 #[tauri::command]
 pub fn list_tasks(database: State<'_, Database>) -> Result<Vec<TaskRecord>, String> {
     database.list_tasks().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn list_task_logs(
+    task_id: String,
+    database: State<'_, Database>,
+) -> Result<Vec<LogRecord>, String> {
+    database
+        .list_task_logs(&task_id)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn get_worker_pool_config(engine: State<'_, TaskEngine>) -> WorkerPoolConfig {
+    WorkerPoolConfig {
+        concurrent_tasks: engine.pool.limit(),
+        active_tasks: engine.pool.active(),
+    }
+}
+
+#[tauri::command]
+pub fn set_worker_pool_config(
+    concurrent_tasks: usize,
+    database: State<'_, Database>,
+    engine: State<'_, TaskEngine>,
+) -> Result<WorkerPoolConfig, String> {
+    if !(MIN_CONCURRENCY..=MAX_CONCURRENCY).contains(&concurrent_tasks) {
+        return Err("concurrent tasks must be between 1 and 10".to_owned());
+    }
+    database
+        .set_setting("concurrent_uploads", &concurrent_tasks.to_string())
+        .map_err(|error| error.to_string())?;
+    engine.pool.set_limit(concurrent_tasks);
+    Ok(WorkerPoolConfig {
+        concurrent_tasks,
+        active_tasks: engine.pool.active(),
+    })
 }
 
 #[tauri::command]
@@ -132,6 +259,8 @@ pub async fn start_compress_upload(
     );
     let archive_path = temp_root.join(format!("{task_id}-{upload_name}"));
     let task_name = format!("Compress & upload {upload_name}");
+    let options_json = serde_json::to_string(&request)
+        .map_err(|error| format!("cannot serialize task options: {error}"))?;
 
     database
         .create_compress_upload_task(
@@ -140,6 +269,7 @@ pub async fn start_compress_upload(
             &source.to_string_lossy(),
             &request.drive_folder_id,
             source_bytes,
+            &options_json,
         )
         .map_err(|error| error.to_string())?;
     database
@@ -179,8 +309,17 @@ pub async fn start_compress_upload(
         make_public: request.make_public,
         seven_zip_path,
         source_bytes,
+        recovery_stage: None,
+        existing_drive_file_id: None,
+        existing_session_uri: None,
     };
-    tauri::async_runtime::spawn(run_workflow(app, task_id, control, workflow_request));
+    tauri::async_runtime::spawn(run_workflow(
+        app,
+        task_id,
+        control,
+        workflow_request,
+        engine.pool.clone(),
+    ));
 
     Ok(record)
 }
@@ -255,6 +394,8 @@ pub async fn start_download_extract(
     let safe_name = sanitize_archive_name(Some(&metadata.name), None);
     let download_path = temp_root.join(format!("{task_id}-{safe_name}"));
     let task_name = format!("Download & extract {safe_name}");
+    let options_json = serde_json::to_string(&request)
+        .map_err(|error| format!("cannot serialize task options: {error}"))?;
     database
         .create_download_extract_task(
             &task_id,
@@ -263,6 +404,7 @@ pub async fn start_download_extract(
             &extraction_destination.to_string_lossy(),
             &file_id,
             compressed_bytes,
+            &options_json,
         )
         .map_err(|error| error.to_string())?;
     database
@@ -304,7 +446,10 @@ pub async fn start_download_extract(
             extraction_destination,
             seven_zip_path,
             compressed_bytes,
+            recovery_stage: None,
+            resume_existing: false,
         },
+        engine.pool.clone(),
     ));
     Ok(record)
 }
@@ -313,6 +458,7 @@ pub async fn start_download_extract(
 pub async fn pause_task(
     task_id: String,
     app: AppHandle,
+    database: State<'_, Database>,
     engine: State<'_, TaskEngine>,
 ) -> Result<TaskRecord, String> {
     let control = engine
@@ -328,6 +474,9 @@ pub async fn pause_task(
         runtime.record.status = "paused".to_owned();
     }
     publish(&app, &control.runtime)?;
+    database
+        .append_log(&task_id, "info", "task.paused", "Task paused by user")
+        .map_err(|error| error.to_string())?;
     snapshot(&control.runtime)
 }
 
@@ -335,6 +484,7 @@ pub async fn pause_task(
 pub async fn resume_task(
     task_id: String,
     app: AppHandle,
+    database: State<'_, Database>,
     engine: State<'_, TaskEngine>,
 ) -> Result<TaskRecord, String> {
     let control = engine
@@ -346,11 +496,230 @@ pub async fn resume_task(
         .ok_or_else(|| "task is not currently active".to_owned())?;
     {
         let mut runtime = control.runtime.lock().map_err(|_| "task lock poisoned")?;
-        runtime.record.status = "running".to_owned();
+        runtime.record.status = if runtime.record.stage == "queued" {
+            "queued".to_owned()
+        } else {
+            "running".to_owned()
+        };
     }
     control.gate.resume();
     publish(&app, &control.runtime)?;
+    database
+        .append_log(&task_id, "info", "task.resumed", "Task resumed by user")
+        .map_err(|error| error.to_string())?;
     snapshot(&control.runtime)
+}
+
+pub async fn recover_unfinished_tasks(app: AppHandle) {
+    let tasks = match app.state::<Database>().list_recoverable_tasks() {
+        Ok(tasks) => tasks,
+        Err(error) => {
+            eprintln!("FileForge task recovery could not load tasks: {error}");
+            return;
+        }
+    };
+
+    for task in tasks {
+        let task_id = task.record.id.clone();
+        if let Err(error) = recover_task(&app, task).await {
+            let _ = app
+                .state::<TaskEngine>()
+                .controls
+                .write()
+                .await
+                .remove(&task_id);
+            let _ = app
+                .state::<Database>()
+                .mark_recovery_failed(&task_id, &error);
+            let _ =
+                app.state::<Database>()
+                    .append_log(&task_id, "error", "recovery.failed", &error);
+            if let Ok(tasks) = app.state::<Database>().list_tasks() {
+                if let Some(record) = tasks.into_iter().find(|record| record.id == task_id) {
+                    let _ = app.emit("task-progress", record);
+                }
+            }
+            eprintln!("FileForge could not recover task {task_id}: {error}");
+        }
+    }
+}
+
+async fn recover_task(app: &AppHandle, task: RecoverableTask) -> Result<(), String> {
+    let original_status = task.record.status.clone();
+    let original_stage = task.record.stage.clone();
+    let mut record = task.record;
+    if original_status != "paused" {
+        record.status = "queued".to_owned();
+    }
+    record.speed_bytes_per_second = None;
+    record.eta_seconds = None;
+    record.error_message = None;
+
+    let gate = Arc::new(if original_status == "paused" {
+        PauseGate::new_paused()
+    } else {
+        PauseGate::new()
+    });
+    let control = Arc::new(TaskControl {
+        gate,
+        runtime: Arc::new(StdMutex::new(TaskRuntime {
+            record: record.clone(),
+            archive_path: task.archive_path.clone(),
+            session_uri: task.resumable_session_uri.clone(),
+        })),
+    });
+
+    let engine = app.state::<TaskEngine>();
+    engine
+        .controls
+        .write()
+        .await
+        .insert(record.id.clone(), control.clone());
+    let pool = engine.pool.clone();
+    drop(engine);
+    publish(app, &control.runtime)?;
+    app.state::<Database>()
+        .append_log(
+            &record.id,
+            "info",
+            "task.recovered",
+            &format!("Recovered after restart from stage '{original_stage}'"),
+        )
+        .map_err(|error| error.to_string())?;
+
+    match task.task_type.as_str() {
+        "compress_upload" => {
+            let options =
+                serde_json::from_str::<StartCompressUploadRequest>(&task.options_json).ok();
+            let source = PathBuf::from(&record.source_path);
+            let drive_folder_id = options
+                .as_ref()
+                .map(|value| value.drive_folder_id.clone())
+                .or_else(|| record.destination_path.clone())
+                .ok_or_else(|| "recovered upload has no Drive folder ID".to_owned())?;
+            validate_drive_folder_id(&drive_folder_id)?;
+            let upload_name = sanitize_archive_name(
+                options
+                    .as_ref()
+                    .and_then(|value| value.archive_name.as_deref()),
+                source.file_name().and_then(|value| value.to_str()),
+            );
+            let archive_path = match task.archive_path {
+                Some(path) => PathBuf::from(path),
+                None => app
+                    .path()
+                    .app_cache_dir()
+                    .map_err(|error| error.to_string())?
+                    .join("archives")
+                    .join(format!("{}-{upload_name}", record.id)),
+            };
+            let can_resume_without_source =
+                (matches!(original_stage.as_str(), "uploading" | "sharing")
+                    && archive_path.is_file())
+                    || (original_stage == "sharing" && record.drive_file_id.is_some());
+            if !source.is_dir() && !can_resume_without_source {
+                return Err(
+                    "source folder no longer exists and no resumable archive is available"
+                        .to_owned(),
+                );
+            }
+            if let Ok(mut runtime) = control.runtime.lock() {
+                runtime.archive_path = Some(archive_path.to_string_lossy().into_owned());
+            }
+            let seven_zip_path = if can_resume_without_source {
+                PathBuf::new()
+            } else {
+                seven_zip::resolve_executable(&app.state::<Database>())
+                    .map_err(|error| error.to_string())?
+                    .0
+            };
+            let source_bytes = if source.is_dir() {
+                seven_zip::folder_size(source.clone())
+                    .await
+                    .map_err(|error| error.to_string())?
+            } else {
+                record.bytes_total
+            };
+            let request = WorkflowRequest {
+                source,
+                archive_path,
+                upload_name,
+                drive_folder_id,
+                make_public: options.map(|value| value.make_public).unwrap_or(true),
+                seven_zip_path,
+                source_bytes,
+                recovery_stage: Some(original_stage),
+                existing_drive_file_id: record.drive_file_id.clone(),
+                existing_session_uri: task.resumable_session_uri,
+            };
+            let task_id = record.id.clone();
+            let app = app.clone();
+            tauri::async_runtime::spawn(run_workflow(app, task_id, control, request, pool));
+        }
+        "download_extract" => {
+            let file_id = record
+                .drive_file_id
+                .clone()
+                .or_else(|| parse_drive_file_id(&record.source_path).ok())
+                .ok_or_else(|| "recovered download has no valid Drive file ID".to_owned())?;
+            let metadata = app
+                .state::<GoogleService>()
+                .metadata(file_id.clone())
+                .await?;
+            let compressed_bytes = metadata
+                .size
+                .as_deref()
+                .ok_or_else(|| "Google Drive metadata does not include ZIP size".to_owned())?
+                .parse::<u64>()
+                .map_err(|_| "Google Drive returned an invalid ZIP size".to_owned())?;
+            let extraction_destination = record
+                .destination_path
+                .as_deref()
+                .map(PathBuf::from)
+                .ok_or_else(|| "recovered download has no extraction destination".to_owned())?;
+            let safe_name = sanitize_archive_name(Some(&metadata.name), None);
+            let download_path = match task.archive_path {
+                Some(path) => PathBuf::from(path),
+                None => app
+                    .path()
+                    .app_cache_dir()
+                    .map_err(|error| error.to_string())?
+                    .join("downloads")
+                    .join(format!("{}-{safe_name}", record.id)),
+            };
+            if let Some(parent) = download_path.parent() {
+                tokio::fs::create_dir_all(parent)
+                    .await
+                    .map_err(|error| format!("cannot restore download cache: {error}"))?;
+            }
+            if let Ok(mut runtime) = control.runtime.lock() {
+                runtime.archive_path = Some(download_path.to_string_lossy().into_owned());
+            }
+            let (seven_zip_path, _) = seven_zip::resolve_executable(&app.state::<Database>())
+                .map_err(|error| error.to_string())?;
+            let request = DownloadWorkflowRequest {
+                file_id,
+                download_path,
+                extraction_destination,
+                seven_zip_path,
+                compressed_bytes,
+                recovery_stage: Some(original_stage),
+                resume_existing: true,
+            };
+            let task_id = record.id.clone();
+            let app = app.clone();
+            tauri::async_runtime::spawn(run_download_workflow(
+                app, task_id, control, request, pool,
+            ));
+        }
+        _ => {
+            return Err(format!(
+                "unsupported recoverable task type: {}",
+                task.task_type
+            ))
+        }
+    }
+    Ok(())
 }
 
 struct WorkflowRequest {
@@ -361,6 +730,9 @@ struct WorkflowRequest {
     make_public: bool,
     seven_zip_path: PathBuf,
     source_bytes: u64,
+    recovery_stage: Option<String>,
+    existing_drive_file_id: Option<String>,
+    existing_session_uri: Option<String>,
 }
 
 struct DownloadWorkflowRequest {
@@ -369,6 +741,8 @@ struct DownloadWorkflowRequest {
     extraction_destination: PathBuf,
     seven_zip_path: PathBuf,
     compressed_bytes: u64,
+    recovery_stage: Option<String>,
+    resume_existing: bool,
 }
 
 async fn run_workflow(
@@ -376,20 +750,23 @@ async fn run_workflow(
     task_id: String,
     control: Arc<TaskControl>,
     request: WorkflowRequest,
+    pool: Arc<WorkerPool>,
 ) {
+    let _permit = match wait_for_worker(&app, &task_id, &control, &pool).await {
+        Ok(permit) => permit,
+        Err(error) => {
+            fail_task(&app, &task_id, &control, &error);
+            app.state::<TaskEngine>()
+                .controls
+                .write()
+                .await
+                .remove(&task_id);
+            return;
+        }
+    };
     let result = execute_workflow(&app, &control, &request).await;
     if let Err(error) = result {
-        if let Ok(mut runtime) = control.runtime.lock() {
-            runtime.record.status = "failed".to_owned();
-            runtime.record.stage = "failed".to_owned();
-            runtime.record.error_message = Some(error.clone());
-            runtime.record.speed_bytes_per_second = None;
-            runtime.record.eta_seconds = None;
-        }
-        let _ = app
-            .state::<Database>()
-            .append_log(&task_id, "error", "task.failed", &error);
-        let _ = publish(&app, &control.runtime);
+        fail_task(&app, &task_id, &control, &error);
     }
 
     app.state::<TaskEngine>()
@@ -404,109 +781,142 @@ async fn execute_workflow(
     control: &Arc<TaskControl>,
     request: &WorkflowRequest,
 ) -> Result<(), String> {
-    set_stage(app, control, "running", "compressing", 0.0)?;
-    app.state::<Database>()
-        .append_log(
-            &snapshot(&control.runtime)?.id,
-            "info",
-            "compression.started",
-            "7-Zip compression started",
-        )
-        .map_err(|error| error.to_string())?;
+    let google = app.state::<GoogleService>();
+    let recovered_at_sharing = request.recovery_stage.as_deref() == Some("sharing")
+        && request.existing_drive_file_id.is_some();
+    let uploaded = if recovered_at_sharing {
+        google
+            .metadata(request.existing_drive_file_id.clone().unwrap_or_default())
+            .await?
+    } else {
+        let archive_ready = matches!(
+            request.recovery_stage.as_deref(),
+            Some("uploading") | Some("sharing")
+        ) && request.archive_path.is_file();
+        if !archive_ready {
+            if request.archive_path.exists() {
+                tokio::fs::remove_file(&request.archive_path)
+                    .await
+                    .map_err(|error| format!("cannot replace incomplete archive: {error}"))?;
+            }
+            set_stage(app, control, "running", "compressing", 0.0)?;
+            app.state::<Database>()
+                .append_log(
+                    &snapshot(&control.runtime)?.id,
+                    "info",
+                    "compression.started",
+                    "7-Zip compression started",
+                )
+                .map_err(|error| error.to_string())?;
 
-    let compression_started = Instant::now();
-    let app_for_progress = app.clone();
-    let runtime_for_progress = control.runtime.clone();
-    let source_bytes = request.source_bytes;
-    let on_compression_progress = Arc::new(move |percent: u8| {
-        if let Ok(mut runtime) = runtime_for_progress.lock() {
-            let processed = source_bytes.saturating_mul(percent as u64) / 100;
-            let elapsed = compression_started.elapsed().as_secs_f64().max(0.001);
-            let speed = processed as f64 / elapsed;
-            runtime.record.progress = percent as f64 * 0.35;
-            runtime.record.bytes_processed = processed;
-            runtime.record.bytes_total = source_bytes;
-            runtime.record.speed_bytes_per_second = Some(speed);
-            runtime.record.eta_seconds = (speed > 0.0)
-                .then(|| ((source_bytes.saturating_sub(processed)) as f64 / speed).ceil() as u64);
-        }
-        let _ = publish(&app_for_progress, &runtime_for_progress);
-    });
-    seven_zip::compress_folder(
-        &request.seven_zip_path,
-        &request.source,
-        &request.archive_path,
-        on_compression_progress,
-    )
-    .await
-    .map_err(|error| error.to_string())?;
-
-    control.gate.wait().await;
-    let archive_bytes = tokio::fs::metadata(&request.archive_path)
-        .await
-        .map_err(|error| format!("compressed archive is unavailable: {error}"))?
-        .len();
-    {
-        let mut runtime = control.runtime.lock().map_err(|_| "task lock poisoned")?;
-        runtime.record.stage = "uploading".to_owned();
-        runtime.record.progress = 35.0;
-        runtime.record.bytes_processed = 0;
-        runtime.record.bytes_total = archive_bytes;
-        runtime.record.speed_bytes_per_second = None;
-        runtime.record.eta_seconds = None;
-    }
-    publish(app, &control.runtime)?;
-    app.state::<Database>()
-        .append_log(
-            &snapshot(&control.runtime)?.id,
-            "info",
-            "upload.started",
-            "Google Drive resumable upload started",
-        )
-        .map_err(|error| error.to_string())?;
-
-    let app_for_upload = app.clone();
-    let runtime_for_upload = control.runtime.clone();
-    let on_upload_event = Arc::new(move |event: UploadEvent| {
-        if let Ok(mut runtime) = runtime_for_upload.lock() {
-            match event {
-                UploadEvent::SessionCreated(uri) => runtime.session_uri = Some(uri),
-                UploadEvent::Progress {
-                    uploaded_bytes,
-                    total_bytes,
-                    speed_bytes_per_second,
-                    eta_seconds,
-                } => {
-                    runtime.record.bytes_processed = uploaded_bytes;
-                    runtime.record.bytes_total = total_bytes;
-                    runtime.record.progress = if total_bytes == 0 {
-                        95.0
-                    } else {
-                        35.0 + uploaded_bytes as f64 / total_bytes as f64 * 60.0
-                    };
-                    runtime.record.speed_bytes_per_second = Some(speed_bytes_per_second);
-                    runtime.record.eta_seconds = Some(eta_seconds);
-                    runtime.record.error_message = None;
+            let compression_started = Instant::now();
+            let app_for_progress = app.clone();
+            let runtime_for_progress = control.runtime.clone();
+            let source_bytes = request.source_bytes;
+            let on_compression_progress = Arc::new(move |percent: u8| {
+                if let Ok(mut runtime) = runtime_for_progress.lock() {
+                    let processed = source_bytes.saturating_mul(percent as u64) / 100;
+                    let elapsed = compression_started.elapsed().as_secs_f64().max(0.001);
+                    let speed = processed as f64 / elapsed;
+                    runtime.record.progress = percent as f64 * 0.35;
+                    runtime.record.bytes_processed = processed;
+                    runtime.record.bytes_total = source_bytes;
+                    runtime.record.speed_bytes_per_second = Some(speed);
+                    runtime.record.eta_seconds = (speed > 0.0).then(|| {
+                        ((source_bytes.saturating_sub(processed)) as f64 / speed).ceil() as u64
+                    });
                 }
-                UploadEvent::Retry { count, message } => {
-                    runtime.record.retry_count = runtime.record.retry_count.saturating_add(1);
-                    runtime.record.error_message = Some(format!("Retry {count}: {message}"));
+                let _ = publish(&app_for_progress, &runtime_for_progress);
+            });
+            seven_zip::compress_folder(
+                &request.seven_zip_path,
+                &request.source,
+                &request.archive_path,
+                on_compression_progress,
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+        }
+
+        control.gate.wait().await;
+        let archive_bytes = tokio::fs::metadata(&request.archive_path)
+            .await
+            .map_err(|error| format!("compressed archive is unavailable: {error}"))?
+            .len();
+        {
+            let mut runtime = control.runtime.lock().map_err(|_| "task lock poisoned")?;
+            runtime.record.stage = "uploading".to_owned();
+            runtime.record.progress = runtime.record.progress.max(35.0);
+            runtime.record.bytes_total = archive_bytes;
+            runtime.record.speed_bytes_per_second = None;
+            runtime.record.eta_seconds = None;
+        }
+        publish(app, &control.runtime)?;
+        app.state::<Database>()
+            .append_log(
+                &snapshot(&control.runtime)?.id,
+                "info",
+                if archive_ready {
+                    "upload.resumed"
+                } else {
+                    "upload.started"
+                },
+                if archive_ready {
+                    "Resuming Google Drive upload from persisted session"
+                } else {
+                    "Google Drive resumable upload started"
+                },
+            )
+            .map_err(|error| error.to_string())?;
+
+        let app_for_upload = app.clone();
+        let runtime_for_upload = control.runtime.clone();
+        let on_upload_event = Arc::new(move |event: UploadEvent| {
+            if let Ok(mut runtime) = runtime_for_upload.lock() {
+                match event {
+                    UploadEvent::SessionCreated(uri) => runtime.session_uri = Some(uri),
+                    UploadEvent::Progress {
+                        uploaded_bytes,
+                        total_bytes,
+                        speed_bytes_per_second,
+                        eta_seconds,
+                    } => {
+                        runtime.record.bytes_processed = uploaded_bytes;
+                        runtime.record.bytes_total = total_bytes;
+                        runtime.record.progress = if total_bytes == 0 {
+                            95.0
+                        } else {
+                            35.0 + uploaded_bytes as f64 / total_bytes as f64 * 60.0
+                        };
+                        runtime.record.speed_bytes_per_second = Some(speed_bytes_per_second);
+                        runtime.record.eta_seconds = Some(eta_seconds);
+                        runtime.record.error_message = None;
+                    }
+                    UploadEvent::Retry { count, message } => {
+                        runtime.record.retry_count = runtime.record.retry_count.saturating_add(1);
+                        runtime.record.error_message = Some(format!("Retry {count}: {message}"));
+                        let _ = app_for_upload.state::<Database>().append_log(
+                            &runtime.record.id,
+                            "warn",
+                            "upload.retry",
+                            &message,
+                        );
+                    }
                 }
             }
-        }
-        let _ = publish(&app_for_upload, &runtime_for_upload);
-    });
-
-    let google = app.state::<GoogleService>();
-    let uploaded = google
-        .upload_zip_resumable(
-            &request.archive_path,
-            &request.upload_name,
-            &request.drive_folder_id,
-            control.gate.clone(),
-            on_upload_event,
-        )
-        .await?;
+            let _ = publish(&app_for_upload, &runtime_for_upload);
+        });
+        google
+            .upload_zip_resumable(
+                &request.archive_path,
+                &request.upload_name,
+                &request.drive_folder_id,
+                request.existing_session_uri.as_deref(),
+                control.gate.clone(),
+                on_upload_event,
+            )
+            .await?
+    };
 
     set_stage(app, control, "running", "sharing", 96.0)?;
     if request.make_public {
@@ -559,20 +969,23 @@ async fn run_download_workflow(
     task_id: String,
     control: Arc<TaskControl>,
     request: DownloadWorkflowRequest,
+    pool: Arc<WorkerPool>,
 ) {
+    let _permit = match wait_for_worker(&app, &task_id, &control, &pool).await {
+        Ok(permit) => permit,
+        Err(error) => {
+            fail_task(&app, &task_id, &control, &error);
+            app.state::<TaskEngine>()
+                .controls
+                .write()
+                .await
+                .remove(&task_id);
+            return;
+        }
+    };
     let result = execute_download_workflow(&app, &control, &request).await;
     if let Err(error) = result {
-        if let Ok(mut runtime) = control.runtime.lock() {
-            runtime.record.status = "failed".to_owned();
-            runtime.record.stage = "failed".to_owned();
-            runtime.record.error_message = Some(error.clone());
-            runtime.record.speed_bytes_per_second = None;
-            runtime.record.eta_seconds = None;
-        }
-        let _ = app
-            .state::<Database>()
-            .append_log(&task_id, "error", "task.failed", &error);
-        let _ = publish(&app, &control.runtime);
+        fail_task(&app, &task_id, &control, &error);
     }
     app.state::<TaskEngine>()
         .controls
@@ -581,134 +994,211 @@ async fn run_download_workflow(
         .remove(&task_id);
 }
 
+async fn wait_for_worker(
+    app: &AppHandle,
+    task_id: &str,
+    control: &Arc<TaskControl>,
+    pool: &Arc<WorkerPool>,
+) -> Result<WorkerPermit, String> {
+    app.state::<Database>()
+        .append_log(
+            task_id,
+            "debug",
+            "worker.queued",
+            "Task entered the worker queue",
+        )
+        .map_err(|error| error.to_string())?;
+    loop {
+        control.gate.wait().await;
+        let permit = pool.acquire().await;
+        if control.gate.is_paused() {
+            drop(permit);
+            continue;
+        }
+        app.state::<Database>()
+            .append_log(
+                task_id,
+                "debug",
+                "worker.started",
+                &format!("Worker slot acquired ({}/{})", pool.active(), pool.limit()),
+            )
+            .map_err(|error| error.to_string())?;
+        return Ok(permit);
+    }
+}
+
+fn fail_task(app: &AppHandle, task_id: &str, control: &TaskControl, error: &str) {
+    if let Ok(mut runtime) = control.runtime.lock() {
+        runtime.record.status = "failed".to_owned();
+        runtime.record.stage = "failed".to_owned();
+        runtime.record.error_message = Some(error.to_owned());
+        runtime.record.speed_bytes_per_second = None;
+        runtime.record.eta_seconds = None;
+    }
+    let _ = app
+        .state::<Database>()
+        .append_log(task_id, "error", "task.failed", error);
+    let _ = publish(app, &control.runtime);
+}
+
 async fn execute_download_workflow(
     app: &AppHandle,
     control: &Arc<TaskControl>,
     request: &DownloadWorkflowRequest,
 ) -> Result<(), String> {
-    set_stage(app, control, "running", "downloading", 5.0)?;
-    app.state::<Database>()
-        .append_log(
-            &snapshot(&control.runtime)?.id,
-            "info",
-            "download.started",
-            "Authenticated Google Drive download started",
-        )
-        .map_err(|error| error.to_string())?;
-
-    let app_for_download = app.clone();
-    let runtime_for_download = control.runtime.clone();
-    let on_download_event = Arc::new(move |event: DownloadEvent| {
-        if let Ok(mut runtime) = runtime_for_download.lock() {
-            match event {
-                DownloadEvent::Progress {
-                    downloaded_bytes,
-                    total_bytes,
-                    speed_bytes_per_second,
-                    eta_seconds,
-                } => {
-                    runtime.record.bytes_processed = downloaded_bytes;
-                    runtime.record.bytes_total = total_bytes;
-                    runtime.record.progress = if total_bytes == 0 {
-                        65.0
+    let recovered_at_opening = request.recovery_stage.as_deref() == Some("opening")
+        && request.extraction_destination.is_dir();
+    if !recovered_at_opening {
+        let archive_ready = matches!(
+            request.recovery_stage.as_deref(),
+            Some("inspecting") | Some("extracting")
+        ) && request.download_path.is_file();
+        if !archive_ready {
+            set_stage(app, control, "running", "downloading", 5.0)?;
+            app.state::<Database>()
+                .append_log(
+                    &snapshot(&control.runtime)?.id,
+                    "info",
+                    if request.resume_existing {
+                        "download.resumed"
                     } else {
-                        5.0 + downloaded_bytes as f64 / total_bytes as f64 * 60.0
-                    };
-                    runtime.record.speed_bytes_per_second = Some(speed_bytes_per_second);
-                    runtime.record.eta_seconds = Some(eta_seconds);
-                    runtime.record.error_message = None;
+                        "download.started"
+                    },
+                    if request.resume_existing {
+                        "Resuming authenticated Google Drive download"
+                    } else {
+                        "Authenticated Google Drive download started"
+                    },
+                )
+                .map_err(|error| error.to_string())?;
+
+            let app_for_download = app.clone();
+            let runtime_for_download = control.runtime.clone();
+            let on_download_event = Arc::new(move |event: DownloadEvent| {
+                if let Ok(mut runtime) = runtime_for_download.lock() {
+                    match event {
+                        DownloadEvent::Progress {
+                            downloaded_bytes,
+                            total_bytes,
+                            speed_bytes_per_second,
+                            eta_seconds,
+                        } => {
+                            runtime.record.bytes_processed = downloaded_bytes;
+                            runtime.record.bytes_total = total_bytes;
+                            runtime.record.progress = if total_bytes == 0 {
+                                65.0
+                            } else {
+                                5.0 + downloaded_bytes as f64 / total_bytes as f64 * 60.0
+                            };
+                            runtime.record.speed_bytes_per_second = Some(speed_bytes_per_second);
+                            runtime.record.eta_seconds = Some(eta_seconds);
+                            runtime.record.error_message = None;
+                        }
+                        DownloadEvent::Retry { count, message } => {
+                            runtime.record.retry_count =
+                                runtime.record.retry_count.saturating_add(1);
+                            runtime.record.error_message =
+                                Some(format!("Retry {count}: {message}"));
+                            let _ = app_for_download.state::<Database>().append_log(
+                                &runtime.record.id,
+                                "warn",
+                                "download.retry",
+                                &message,
+                            );
+                        }
+                    }
                 }
-                DownloadEvent::Retry { count, message } => {
-                    runtime.record.retry_count = runtime.record.retry_count.saturating_add(1);
-                    runtime.record.error_message = Some(format!("Retry {count}: {message}"));
-                }
-            }
-        }
-        let _ = publish(&app_for_download, &runtime_for_download);
-    });
-    app.state::<GoogleService>()
-        .download_file(
-            &request.file_id,
-            &request.download_path,
-            request.compressed_bytes,
-            control.gate.clone(),
-            on_download_event,
-        )
-        .await?;
-
-    control.gate.wait().await;
-    set_stage(app, control, "running", "inspecting", 66.0)?;
-    let archive_info = seven_zip::inspect_archive(&request.seven_zip_path, &request.download_path)
-        .await
-        .map_err(|error| error.to_string())?;
-    ensure_extraction_space(
-        &request.extraction_destination,
-        archive_info.uncompressed_bytes,
-    )?;
-    tokio::fs::create_dir_all(&request.extraction_destination)
-        .await
-        .map_err(|error| format!("cannot create extraction destination: {error}"))?;
-    app.state::<Database>()
-        .append_log(
-            &snapshot(&control.runtime)?.id,
-            "info",
-            "archive.validated",
-            &format!(
-                "ZIP contains {} entries and {} uncompressed bytes",
-                archive_info.entries, archive_info.uncompressed_bytes
-            ),
-        )
-        .map_err(|error| error.to_string())?;
-
-    {
-        let mut runtime = control.runtime.lock().map_err(|_| "task lock poisoned")?;
-        runtime.record.stage = "extracting".to_owned();
-        runtime.record.progress = 67.0;
-        runtime.record.bytes_processed = 0;
-        runtime.record.bytes_total = archive_info.uncompressed_bytes;
-        runtime.record.speed_bytes_per_second = None;
-        runtime.record.eta_seconds = None;
-    }
-    publish(app, &control.runtime)?;
-
-    let extraction_started = Instant::now();
-    let app_for_extract = app.clone();
-    let runtime_for_extract = control.runtime.clone();
-    let uncompressed_bytes = archive_info.uncompressed_bytes;
-    let on_extract_progress = Arc::new(move |percent: u8| {
-        if let Ok(mut runtime) = runtime_for_extract.lock() {
-            let processed = uncompressed_bytes.saturating_mul(percent as u64) / 100;
-            let elapsed = extraction_started.elapsed().as_secs_f64().max(0.001);
-            let speed = processed as f64 / elapsed;
-            runtime.record.progress = 67.0 + percent as f64 * 0.31;
-            runtime.record.bytes_processed = processed;
-            runtime.record.bytes_total = uncompressed_bytes;
-            runtime.record.speed_bytes_per_second = Some(speed);
-            runtime.record.eta_seconds = (speed > 0.0).then(|| {
-                ((uncompressed_bytes.saturating_sub(processed)) as f64 / speed).ceil() as u64
+                let _ = publish(&app_for_download, &runtime_for_download);
             });
+            app.state::<GoogleService>()
+                .download_file(
+                    &request.file_id,
+                    &request.download_path,
+                    request.compressed_bytes,
+                    request.resume_existing,
+                    control.gate.clone(),
+                    on_download_event,
+                )
+                .await?;
         }
-        let _ = publish(&app_for_extract, &runtime_for_extract);
-    });
-    seven_zip::extract_archive(
-        &request.seven_zip_path,
-        &request.download_path,
-        &request.extraction_destination,
-        on_extract_progress,
-    )
-    .await
-    .map_err(|error| error.to_string())?;
+
+        control.gate.wait().await;
+        set_stage(app, control, "running", "inspecting", 66.0)?;
+        let archive_info =
+            seven_zip::inspect_archive(&request.seven_zip_path, &request.download_path)
+                .await
+                .map_err(|error| error.to_string())?;
+        ensure_extraction_space(
+            &request.extraction_destination,
+            archive_info.uncompressed_bytes,
+        )?;
+        tokio::fs::create_dir_all(&request.extraction_destination)
+            .await
+            .map_err(|error| format!("cannot create extraction destination: {error}"))?;
+        app.state::<Database>()
+            .append_log(
+                &snapshot(&control.runtime)?.id,
+                "info",
+                "archive.validated",
+                &format!(
+                    "ZIP contains {} entries and {} uncompressed bytes",
+                    archive_info.entries, archive_info.uncompressed_bytes
+                ),
+            )
+            .map_err(|error| error.to_string())?;
+
+        {
+            let mut runtime = control.runtime.lock().map_err(|_| "task lock poisoned")?;
+            runtime.record.stage = "extracting".to_owned();
+            runtime.record.progress = 67.0;
+            runtime.record.bytes_processed = 0;
+            runtime.record.bytes_total = archive_info.uncompressed_bytes;
+            runtime.record.speed_bytes_per_second = None;
+            runtime.record.eta_seconds = None;
+        }
+        publish(app, &control.runtime)?;
+
+        let extraction_started = Instant::now();
+        let app_for_extract = app.clone();
+        let runtime_for_extract = control.runtime.clone();
+        let uncompressed_bytes = archive_info.uncompressed_bytes;
+        let on_extract_progress = Arc::new(move |percent: u8| {
+            if let Ok(mut runtime) = runtime_for_extract.lock() {
+                let processed = uncompressed_bytes.saturating_mul(percent as u64) / 100;
+                let elapsed = extraction_started.elapsed().as_secs_f64().max(0.001);
+                let speed = processed as f64 / elapsed;
+                runtime.record.progress = 67.0 + percent as f64 * 0.31;
+                runtime.record.bytes_processed = processed;
+                runtime.record.bytes_total = uncompressed_bytes;
+                runtime.record.speed_bytes_per_second = Some(speed);
+                runtime.record.eta_seconds = (speed > 0.0).then(|| {
+                    ((uncompressed_bytes.saturating_sub(processed)) as f64 / speed).ceil() as u64
+                });
+            }
+            let _ = publish(&app_for_extract, &runtime_for_extract);
+        });
+        seven_zip::extract_archive(
+            &request.seven_zip_path,
+            &request.download_path,
+            &request.extraction_destination,
+            on_extract_progress,
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+    }
 
     set_stage(app, control, "running", "opening", 99.0)?;
-    if let Err(error) = tokio::fs::remove_file(&request.download_path).await {
-        let _ = app.state::<Database>().append_log(
-            &snapshot(&control.runtime)?.id,
-            "warn",
-            "cleanup.failed",
-            &format!("extracted successfully but could not delete temporary ZIP: {error}"),
-        );
-    } else if let Ok(mut runtime) = control.runtime.lock() {
-        runtime.archive_path = None;
+    if request.download_path.exists() {
+        if let Err(error) = tokio::fs::remove_file(&request.download_path).await {
+            let _ = app.state::<Database>().append_log(
+                &snapshot(&control.runtime)?.id,
+                "warn",
+                "cleanup.failed",
+                &format!("extracted successfully but could not delete temporary ZIP: {error}"),
+            );
+        } else if let Ok(mut runtime) = control.runtime.lock() {
+            runtime.archive_path = None;
+        }
     }
 
     let destination = request.extraction_destination.clone();
@@ -935,6 +1425,51 @@ fn sanitize_archive_name(requested: Option<&str>, folder_name: Option<&str>) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn worker_pool_enforces_limit_and_releases_slots() {
+        let pool = Arc::new(WorkerPool::new(1));
+        let first = pool.acquire().await;
+        assert_eq!(pool.active(), 1);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(30), pool.acquire())
+                .await
+                .is_err()
+        );
+
+        drop(first);
+        let second = tokio::time::timeout(std::time::Duration::from_millis(200), pool.acquire())
+            .await
+            .expect("released worker slot");
+        assert_eq!(pool.active(), 1);
+        drop(second);
+    }
+
+    #[tokio::test]
+    async fn worker_pool_limit_updates_without_interrupting_active_tasks() {
+        let pool = Arc::new(WorkerPool::new(2));
+        let first = pool.acquire().await;
+        let second = pool.acquire().await;
+        pool.set_limit(1);
+        assert_eq!(pool.limit(), 1);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(30), pool.acquire())
+                .await
+                .is_err()
+        );
+        drop(first);
+        drop(second);
+        let next = tokio::time::timeout(std::time::Duration::from_millis(200), pool.acquire())
+            .await
+            .expect("new limit accepts one task after active tasks finish");
+        drop(next);
+    }
+
+    #[test]
+    fn worker_pool_limit_is_clamped_to_supported_range() {
+        assert_eq!(WorkerPool::new(0).limit(), 1);
+        assert_eq!(WorkerPool::new(50).limit(), 10);
+    }
 
     #[test]
     fn archive_name_is_sanitized_and_gets_zip_extension() {

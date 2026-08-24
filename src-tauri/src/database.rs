@@ -11,7 +11,7 @@ use tauri::{AppHandle, Manager, Runtime};
 use thiserror::Error;
 
 const DATABASE_FILE: &str = "fileforge.db";
-const LATEST_SCHEMA_VERSION: i64 = 2;
+const LATEST_SCHEMA_VERSION: i64 = 3;
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -34,6 +34,27 @@ pub struct TaskRecord {
     pub drive_web_view_link: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct RecoverableTask {
+    pub record: TaskRecord,
+    pub task_type: String,
+    pub archive_path: Option<String>,
+    pub resumable_session_uri: Option<String>,
+    pub options_json: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LogRecord {
+    pub id: i64,
+    pub task_id: Option<String>,
+    pub level: String,
+    pub event: String,
+    pub message: String,
+    pub context_json: Option<String>,
+    pub created_at: String,
 }
 
 #[derive(Clone, Debug)]
@@ -128,13 +149,22 @@ impl Database {
         source_path: &str,
         drive_folder_id: &str,
         bytes_total: u64,
+        options_json: &str,
     ) -> Result<(), DatabaseError> {
         let connection = self.lock()?;
         connection.execute(
             "INSERT INTO tasks (
-               id, name, task_type, status, stage, source_path, destination_path, bytes_total
-             ) VALUES (?1, ?2, 'compress_upload', 'queued', 'queued', ?3, ?4, ?5)",
-            params![id, name, source_path, drive_folder_id, bytes_total],
+               id, name, task_type, status, stage, source_path, destination_path, bytes_total,
+               options_json
+             ) VALUES (?1, ?2, 'compress_upload', 'queued', 'queued', ?3, ?4, ?5, ?6)",
+            params![
+                id,
+                name,
+                source_path,
+                drive_folder_id,
+                bytes_total,
+                options_json
+            ],
         )?;
         Ok(())
     }
@@ -147,20 +177,22 @@ impl Database {
         destination_path: &str,
         drive_file_id: &str,
         bytes_total: u64,
+        options_json: &str,
     ) -> Result<(), DatabaseError> {
         let connection = self.lock()?;
         connection.execute(
             "INSERT INTO tasks (
                id, name, task_type, status, stage, source_path, destination_path,
-               drive_file_id, bytes_total
-             ) VALUES (?1, ?2, 'download_extract', 'queued', 'queued', ?3, ?4, ?5, ?6)",
+               drive_file_id, bytes_total, options_json
+             ) VALUES (?1, ?2, 'download_extract', 'queued', 'queued', ?3, ?4, ?5, ?6, ?7)",
             params![
                 id,
                 name,
                 source_link,
                 destination_path,
                 drive_file_id,
-                bytes_total
+                bytes_total,
+                options_json
             ],
         )?;
         Ok(())
@@ -256,6 +288,66 @@ impl Database {
             .map_err(DatabaseError::from)
     }
 
+    pub fn list_recoverable_tasks(&self) -> Result<Vec<RecoverableTask>, DatabaseError> {
+        let connection = self.lock()?;
+        let mut statement = connection.prepare(
+            "SELECT id, name, task_type, status, stage, COALESCE(source_path, ''),
+                    destination_path, progress, bytes_processed, bytes_total,
+                    speed_bytes_per_second, eta_seconds, retry_count, error_message,
+                    drive_file_id, drive_web_view_link, created_at, updated_at,
+                    archive_path, resumable_session_uri, options_json
+             FROM tasks
+             WHERE status IN ('queued', 'running', 'paused')
+               AND task_type IN ('compress_upload', 'download_extract')
+             ORDER BY created_at ASC",
+        )?;
+        let rows = statement.query_map([], |row| {
+            let task_type: String = row.get(2)?;
+            Ok(RecoverableTask {
+                record: task_record_from_row(row, task_type.clone())?,
+                task_type,
+                archive_path: row.get(18)?,
+                resumable_session_uri: row.get(19)?,
+                options_json: row.get(20)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(DatabaseError::from)
+    }
+
+    pub fn list_task_logs(&self, task_id: &str) -> Result<Vec<LogRecord>, DatabaseError> {
+        let connection = self.lock()?;
+        let mut statement = connection.prepare(
+            "SELECT id, task_id, level, event, message, context_json, created_at
+             FROM logs WHERE task_id = ?1 ORDER BY created_at ASC, id ASC",
+        )?;
+        let rows = statement.query_map([task_id], |row| {
+            Ok(LogRecord {
+                id: row.get(0)?,
+                task_id: row.get(1)?,
+                level: row.get(2)?,
+                event: row.get(3)?,
+                message: row.get(4)?,
+                context_json: row.get(5)?,
+                created_at: row.get(6)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(DatabaseError::from)
+    }
+
+    pub fn mark_recovery_failed(&self, task_id: &str, message: &str) -> Result<(), DatabaseError> {
+        let connection = self.lock()?;
+        connection.execute(
+            "UPDATE tasks SET status = 'failed', stage = 'failed', error_message = ?2,
+                    speed_bytes_per_second = NULL, eta_seconds = NULL,
+                    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+             WHERE id = ?1",
+            params![task_id, message],
+        )?;
+        Ok(())
+    }
+
     #[allow(dead_code)]
     pub fn connection(&self) -> Result<MutexGuard<'_, Connection>, DatabaseError> {
         self.lock()
@@ -294,12 +386,46 @@ fn apply_migrations(connection: &mut Connection) -> Result<(), rusqlite::Error> 
         transaction.commit()?;
     }
 
+    let current_version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if current_version < 3 {
+        let transaction = connection.transaction()?;
+        transaction.execute_batch(include_str!("../migrations/0003_task_recovery.sql"))?;
+        transaction.pragma_update(None, "user_version", 3)?;
+        transaction.commit()?;
+    }
+
     let final_version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
     if final_version != LATEST_SCHEMA_VERSION {
         return Err(rusqlite::Error::InvalidQuery);
     }
 
     Ok(())
+}
+
+fn task_record_from_row(
+    row: &rusqlite::Row<'_>,
+    task_type: String,
+) -> rusqlite::Result<TaskRecord> {
+    Ok(TaskRecord {
+        id: row.get(0)?,
+        name: row.get(1)?,
+        kind: task_type.replace('_', "-"),
+        status: row.get(3)?,
+        stage: row.get(4)?,
+        source_path: row.get(5)?,
+        destination_path: row.get(6)?,
+        progress: row.get(7)?,
+        bytes_processed: row.get(8)?,
+        bytes_total: row.get(9)?,
+        speed_bytes_per_second: row.get(10)?,
+        eta_seconds: row.get(11)?,
+        retry_count: row.get(12)?,
+        error_message: row.get(13)?,
+        drive_file_id: row.get(14)?,
+        drive_web_view_link: row.get(15)?,
+        created_at: row.get(16)?,
+        updated_at: row.get(17)?,
+    })
 }
 
 #[cfg(test)]
@@ -338,6 +464,16 @@ mod tests {
             .optional()
             .expect("inspect task columns");
         assert_eq!(stage_column.as_deref(), Some("stage"));
+
+        let recovery_column: Option<String> = connection
+            .query_row(
+                "SELECT name FROM pragma_table_info('tasks') WHERE name = 'options_json'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .expect("inspect recovery columns");
+        assert_eq!(recovery_column.as_deref(), Some("options_json"));
     }
 
     #[test]
@@ -351,5 +487,54 @@ mod tests {
             [],
         );
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn recoverable_tasks_and_logs_round_trip() {
+        let directory = tempfile::tempdir().expect("temporary database directory");
+        let database = Database::open(directory.path().join("recovery.db")).expect("database");
+        database
+            .create_compress_upload_task(
+                "recover-me",
+                "Recover upload",
+                "C:\\source",
+                "root",
+                42,
+                r#"{"sourcePath":"C:\\source","driveFolderId":"root","archiveName":"sample.zip","makePublic":true}"#,
+            )
+            .expect("create task");
+        {
+            let connection = database.connection().expect("connection");
+            connection
+                .execute(
+                    "UPDATE tasks SET status = 'running', stage = 'uploading',
+                     archive_path = 'C:\\cache\\sample.zip', resumable_session_uri = 'https://upload.test/session'
+                     WHERE id = 'recover-me'",
+                    [],
+                )
+                .expect("prepare recovery state");
+        }
+        database
+            .append_log("recover-me", "info", "upload.started", "Upload started")
+            .expect("append log");
+
+        let tasks = database
+            .list_recoverable_tasks()
+            .expect("recoverable tasks");
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].record.stage, "uploading");
+        assert_eq!(
+            tasks[0].archive_path.as_deref(),
+            Some("C:\\cache\\sample.zip")
+        );
+        assert_eq!(
+            tasks[0].resumable_session_uri.as_deref(),
+            Some("https://upload.test/session")
+        );
+        assert!(tasks[0].options_json.contains("sample.zip"));
+
+        let logs = database.list_task_logs("recover-me").expect("task logs");
+        assert_eq!(logs.len(), 1);
+        assert_eq!(logs[0].event, "upload.started");
     }
 }

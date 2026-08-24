@@ -18,9 +18,17 @@ pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
             let database = Database::initialize(app.handle())?;
+            let concurrent_tasks = database
+                .get_setting("concurrent_uploads")?
+                .and_then(|value| value.parse::<usize>().ok())
+                .unwrap_or(3);
             app.manage(database);
             app.manage(GoogleService::new());
-            app.manage(TaskEngine::new());
+            app.manage(TaskEngine::new(concurrent_tasks));
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                task_engine::recover_unfinished_tasks(handle).await;
+            });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -37,6 +45,9 @@ pub fn run() {
             seven_zip::get_7zip_status,
             seven_zip::set_7zip_path,
             task_engine::list_tasks,
+            task_engine::list_task_logs,
+            task_engine::get_worker_pool_config,
+            task_engine::set_worker_pool_config,
             task_engine::start_compress_upload,
             task_engine::start_download_extract,
             task_engine::pause_task,

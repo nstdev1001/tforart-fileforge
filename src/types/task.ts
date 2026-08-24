@@ -41,6 +41,21 @@ export interface Task {
   updatedAt: string;
 }
 
+export interface TaskLog {
+  id: number;
+  taskId?: string;
+  level: "trace" | "debug" | "info" | "warn" | "error";
+  event: string;
+  message: string;
+  contextJson?: string;
+  createdAt: string;
+}
+
+export interface WorkerPoolConfig {
+  concurrentTasks: number;
+  activeTasks: number;
+}
+
 export const taskStatusLabel: Record<TaskStatus, string> = {
   queued: "Queued",
   running: "Running",

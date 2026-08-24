@@ -1,6 +1,6 @@
 import { zodResolver } from "@hookform/resolvers/zod";
 import { Check, FolderCog, Palette, Save, SlidersHorizontal } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
 import { z } from "zod";
 
@@ -9,6 +9,7 @@ import { SevenZipSettings } from "@/components/settings/seven-zip-settings";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { getWorkerPoolConfig, setWorkerPoolConfig } from "@/lib/tauri";
 import { cn } from "@/lib/utils";
 import { type Theme, useAppStore } from "@/store/app-store";
 
@@ -29,14 +30,29 @@ export function SettingsPage() {
   const theme = useAppStore((state) => state.theme);
   const setTheme = useAppStore((state) => state.setTheme);
   const [saved, setSaved] = useState(false);
-  const { register, handleSubmit, formState: { errors } } = useForm<SettingsForm>({
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const { register, handleSubmit, setValue, formState: { errors, isSubmitting } } = useForm<SettingsForm>({
     resolver: zodResolver(settingsSchema),
     defaultValues: { concurrentUploads: 3, temporaryDirectory: "" },
   });
 
-  function saveSettings() {
-    setSaved(true);
-    window.setTimeout(() => setSaved(false), 1800);
+  useEffect(() => {
+    getWorkerPoolConfig()
+      .then((config) => setValue("concurrentUploads", config.concurrentTasks))
+      .catch(() => {
+        // Browser preview has no native worker pool.
+      });
+  }, [setValue]);
+
+  async function saveSettings(values: SettingsForm) {
+    setSaveError(null);
+    try {
+      await setWorkerPoolConfig(values.concurrentUploads);
+      setSaved(true);
+      window.setTimeout(() => setSaved(false), 1800);
+    } catch (error) {
+      setSaveError(error instanceof Error ? error.message : String(error));
+    }
   }
 
   return (
@@ -62,7 +78,7 @@ export function SettingsPage() {
       <Card>
         <CardHeader className="flex-row items-start gap-3 border-b border-border/70">
           <SlidersHorizontal className="mt-0.5 size-5 text-primary" />
-          <div><CardTitle>Task engine</CardTitle><CardDescription>Defaults are persisted to SQLite in the worker-pool phase.</CardDescription></div>
+          <div><CardTitle>Task engine</CardTitle><CardDescription>The worker limit is applied immediately and persisted in SQLite.</CardDescription></div>
         </CardHeader>
         <CardContent className="grid gap-5 pt-5 sm:grid-cols-2">
           <label className="space-y-2 text-xs font-semibold">
@@ -78,7 +94,8 @@ export function SettingsPage() {
       </Card>
 
       <div className="flex justify-end">
-        <Button type="submit">{saved ? <Check className="size-4" /> : <Save className="size-4" />}{saved ? "Saved" : "Save changes"}</Button>
+        {saveError ? <p className="mr-auto self-center text-xs text-red-600">{saveError}</p> : null}
+        <Button type="submit" disabled={isSubmitting}>{saved ? <Check className="size-4" /> : <Save className="size-4" />}{isSubmitting ? "Saving..." : saved ? "Saved" : "Save changes"}</Button>
       </div>
     </form>
   );

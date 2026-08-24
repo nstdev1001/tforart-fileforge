@@ -27,6 +27,9 @@ Implemented:
 - Safe Google Drive link/file-ID parser for common `drive.google.com` and `docs.google.com` URL forms with strict host and ID validation.
 - Authenticated streaming ZIP downloads using `files.get?alt=media`, HTTP Range recovery, pause/resume, backoff, and persisted task metrics.
 - ZIP metadata/capability validation, archive path traversal checks, uncompressed-size disk preflight, native 7-Zip extraction, temporary download cleanup, and automatic Explorer open.
+- Configurable worker pool with a live SQLite-backed concurrency limit from 1 to 10; queued and paused jobs do not consume execution slots.
+- Startup recovery for queued, running, and paused workflows, including persisted Google resumable-upload sessions and HTTP Range continuation from partial download files.
+- Per-task operational history for queue admission, worker start, stage transitions, retry/backoff events, recovery, completion, warnings, and failures.
 
 ## Requirements
 
@@ -46,6 +49,7 @@ npm run tauri:dev
 ./scripts/verify-phase2.ps1
 ./scripts/verify-phase3.ps1
 ./scripts/verify-phase4.ps1
+./scripts/verify-phase5.ps1
 ```
 
 `npm run dev` runs the browser UI only. Native folder picking, disk-space inspection, and SQLite health are available when running `npm run tauri:dev`.
@@ -76,6 +80,7 @@ The Tauri npm commands use `scripts/run-tauri.ps1`, which locates Cargo in the s
 ├── src-tauri/
 │   ├── capabilities/default.json     # minimum Tauri core permissions
 │   ├── migrations/0001_initial.sql   # Phase 1 SQLite schema
+│   ├── migrations/0003_task_recovery.sql # Phase 5 recovery metadata
 │   ├── src/commands.rs               # folder picker, disk space, DB health
 │   ├── src/database.rs               # connection, pragmas, migrations
 │   ├── src/google/                    # OAuth, keyring, and Drive API client
@@ -121,3 +126,11 @@ Resumable sessions and progress are persisted for the recovery worker scheduled 
 3. Choose a local destination. **Create a new subfolder** is enabled by default to prevent accidental overwrites; duplicate names receive a numeric suffix.
 4. FileForge validates Drive metadata and download permission before creating the task, downloads with byte-range recovery, and rejects ZIP entries containing absolute or parent-traversal paths.
 5. After extraction, the temporary ZIP is deleted and the result folder opens in Windows Explorer. Failed tasks keep the downloaded ZIP for diagnostics.
+
+## Worker pool and recovery
+
+The worker limit is configured under Settings → Task engine and takes effect immediately. Lowering the limit never interrupts an active workflow; it prevents additional queued tasks from starting until the active count falls below the new limit.
+
+On launch, FileForge reloads `queued`, `running`, and `paused` workflows from SQLite. Upload recovery reuses an existing ZIP and asks Google for the committed offset of the saved resumable session. Download recovery opens the task-owned temporary file at its current length and requests the remaining bytes with HTTP Range. A task that had already entered extraction safely reruns 7-Zip with overwrite confirmation, while a paused task remains paused after restart.
+
+Open History to select any persisted task and inspect its chronological operational log.

@@ -40,6 +40,7 @@ impl GoogleService {
         archive_path: &std::path::Path,
         upload_name: &str,
         drive_folder_id: &str,
+        existing_session_uri: Option<&str>,
         pause_gate: std::sync::Arc<crate::task_engine::PauseGate>,
         on_event: std::sync::Arc<dyn Fn(drive::UploadEvent) + Send + Sync>,
     ) -> Result<DriveFile, String> {
@@ -50,6 +51,7 @@ impl GoogleService {
             archive_path,
             upload_name,
             drive_folder_id,
+            existing_session_uri,
             pause_gate,
             on_event,
         )
@@ -74,6 +76,7 @@ impl GoogleService {
         file_id: &str,
         destination: &std::path::Path,
         total_bytes: u64,
+        resume_existing: bool,
         pause_gate: std::sync::Arc<crate::task_engine::PauseGate>,
         on_event: std::sync::Arc<dyn Fn(drive::DownloadEvent) + Send + Sync>,
     ) -> Result<(), String> {
@@ -84,6 +87,7 @@ impl GoogleService {
             file_id,
             destination,
             total_bytes,
+            resume_existing,
             pause_gate,
             on_event,
         )
