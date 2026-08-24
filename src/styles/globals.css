@@ -1,0 +1,110 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme inline {
+  --font-sans: "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+}
+
+:root {
+  font-family: var(--font-sans);
+  color: var(--foreground);
+  background: var(--background);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  --background: #f6f7f3;
+  --foreground: #172019;
+  --card: #ffffff;
+  --card-foreground: #172019;
+  --primary: #326b4c;
+  --primary-foreground: #ffffff;
+  --secondary: #e8ece5;
+  --secondary-foreground: #26362b;
+  --muted: #edf0eb;
+  --muted-foreground: #69756d;
+  --accent: #e2ebe4;
+  --accent-foreground: #234430;
+  --destructive: #c34141;
+  --border: #dde2dc;
+  --input: #d5dcd5;
+  --ring: #4b7d60;
+}
+
+.dark {
+  --background: #111512;
+  --foreground: #edf2ed;
+  --card: #181d19;
+  --card-foreground: #edf2ed;
+  --primary: #77b58d;
+  --primary-foreground: #102117;
+  --secondary: #242b25;
+  --secondary-foreground: #e3e9e3;
+  --muted: #232923;
+  --muted-foreground: #9da79f;
+  --accent: #263229;
+  --accent-foreground: #dcf0e2;
+  --destructive: #db5b5b;
+  --border: #2a332c;
+  --input: #344038;
+  --ring: #77b58d;
+}
+
+* {
+  box-sizing: border-box;
+  border-color: var(--border);
+}
+
+html,
+body,
+#root {
+  min-width: 760px;
+  min-height: 100%;
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  overflow: hidden;
+  background:
+    radial-gradient(circle at 72% -15%, color-mix(in srgb, var(--primary) 11%, transparent), transparent 30rem),
+    var(--background);
+}
+
+button,
+input,
+select {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-thumb {
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--muted-foreground) 42%, transparent);
+  background-clip: padding-box;
+}
+

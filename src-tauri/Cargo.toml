@@ -1,0 +1,26 @@
+[package]
+name = "fileforge"
+version = "0.1.0"
+description = "Task manager and file automation desktop application"
+authors = ["FileForge contributors"]
+edition = "2021"
+rust-version = "1.77.2"
+
+[lib]
+name = "fileforge_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+fs2 = "0.4"
+rfd = "0.15"
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+tauri = { version = "2", features = [] }
+thiserror = "2"
+
+[dev-dependencies]
+tempfile = "3"
+
