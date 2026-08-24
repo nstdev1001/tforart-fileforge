@@ -139,6 +139,33 @@ impl Database {
         Ok(())
     }
 
+    pub fn create_download_extract_task(
+        &self,
+        id: &str,
+        name: &str,
+        source_link: &str,
+        destination_path: &str,
+        drive_file_id: &str,
+        bytes_total: u64,
+    ) -> Result<(), DatabaseError> {
+        let connection = self.lock()?;
+        connection.execute(
+            "INSERT INTO tasks (
+               id, name, task_type, status, stage, source_path, destination_path,
+               drive_file_id, bytes_total
+             ) VALUES (?1, ?2, 'download_extract', 'queued', 'queued', ?3, ?4, ?5, ?6)",
+            params![
+                id,
+                name,
+                source_link,
+                destination_path,
+                drive_file_id,
+                bytes_total
+            ],
+        )?;
+        Ok(())
+    }
+
     pub fn update_task(&self, task: &TaskUpdate<'_>) -> Result<(), DatabaseError> {
         let connection = self.lock()?;
         connection.execute(

@@ -38,6 +38,7 @@ pub fn run() {
             seven_zip::set_7zip_path,
             task_engine::list_tasks,
             task_engine::start_compress_upload,
+            task_engine::start_download_extract,
             task_engine::pause_task,
             task_engine::resume_task,
         ])

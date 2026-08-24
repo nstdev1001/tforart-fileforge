@@ -1,4 +1,5 @@
 mod drive;
+mod link;
 mod oauth;
 mod secure_store;
 
@@ -67,9 +68,33 @@ impl GoogleService {
             .await
             .map_err(|error| error.to_string())
     }
+
+    pub(crate) async fn download_file(
+        &self,
+        file_id: &str,
+        destination: &std::path::Path,
+        total_bytes: u64,
+        pause_gate: std::sync::Arc<crate::task_engine::PauseGate>,
+        on_event: std::sync::Arc<dyn Fn(drive::DownloadEvent) + Send + Sync>,
+    ) -> Result<(), String> {
+        drive::download_file(
+            &self.http,
+            &self.token_store,
+            &self.refresh_lock,
+            file_id,
+            destination,
+            total_bytes,
+            pause_gate,
+            on_event,
+        )
+        .await
+        .map_err(|error| error.to_string())
+    }
 }
 
+pub(crate) use drive::DownloadEvent;
 pub(crate) use drive::UploadEvent;
+pub(crate) use link::parse_drive_file_id;
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]

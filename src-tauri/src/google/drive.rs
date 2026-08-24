@@ -4,8 +4,8 @@ use reqwest::{header, StatusCode};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use thiserror::Error;
 use tokio::{
-    fs::File,
-    io::{AsyncReadExt, AsyncSeekExt},
+    fs::{File, OpenOptions},
+    io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
     sync::Mutex,
     time::{sleep, Duration},
 };
@@ -18,7 +18,7 @@ use crate::task_engine::PauseGate;
 
 const DRIVE_API_BASE: &str = "https://www.googleapis.com/drive/v3";
 const FILE_FIELDS: &str =
-    "id,name,mimeType,size,modifiedTime,createdTime,parents,webViewLink,shared,trashed";
+    "id,name,mimeType,size,modifiedTime,createdTime,parents,webViewLink,shared,trashed,capabilities(canDownload)";
 const UPLOAD_API_URL: &str = "https://www.googleapis.com/upload/drive/v3/files";
 const UPLOAD_CHUNK_SIZE: usize = 8 * 1024 * 1024;
 const MAX_UPLOAD_RETRIES: u32 = 5;
@@ -39,6 +39,13 @@ pub struct DriveFile {
     pub shared: bool,
     #[serde(default)]
     pub trashed: bool,
+    pub capabilities: Option<DriveCapabilities>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DriveCapabilities {
+    pub can_download: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -98,6 +105,8 @@ pub enum DriveError {
     SessionExpired,
     #[error("Google Drive upload ended without returning file metadata")]
     MissingUploadResult,
+    #[error("Google Drive download ended before the expected file size")]
+    DownloadIncomplete,
 }
 
 #[derive(Clone, Debug)]
@@ -105,6 +114,20 @@ pub enum UploadEvent {
     SessionCreated(String),
     Progress {
         uploaded_bytes: u64,
+        total_bytes: u64,
+        speed_bytes_per_second: f64,
+        eta_seconds: u64,
+    },
+    Retry {
+        count: u32,
+        message: String,
+    },
+}
+
+#[derive(Clone, Debug)]
+pub enum DownloadEvent {
+    Progress {
+        downloaded_bytes: u64,
         total_bytes: u64,
         speed_bytes_per_second: f64,
         eta_seconds: u64,
@@ -197,6 +220,172 @@ pub async fn get_web_view_link(
         file_id,
         web_view_link: metadata.web_view_link,
     })
+}
+
+pub async fn download_file(
+    http: &reqwest::Client,
+    store: &SecureTokenStore,
+    refresh_lock: &Mutex<()>,
+    file_id: &str,
+    destination: &Path,
+    total_bytes: u64,
+    pause_gate: Arc<PauseGate>,
+    on_event: Arc<dyn Fn(DownloadEvent) + Send + Sync>,
+) -> Result<(), DriveError> {
+    validate_file_id(file_id)?;
+    let url = format!("{DRIVE_API_BASE}/files/{file_id}");
+    let mut output = OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(destination)
+        .await?;
+    let mut offset = 0_u64;
+    let mut retry_count = 0_u32;
+    let started_at = Instant::now();
+
+    while offset < total_bytes {
+        pause_gate.wait().await;
+        let bearer_token = access_token(http, store, refresh_lock, false).await?;
+        let mut request = http
+            .get(&url)
+            .query(&[("alt", "media"), ("supportsAllDrives", "true")])
+            .bearer_auth(bearer_token);
+        if offset > 0 {
+            request = request.header(header::RANGE, format!("bytes={offset}-"));
+        }
+
+        let response = request.send().await;
+        let mut response = match response {
+            Ok(response) if response.status() == StatusCode::UNAUTHORIZED => {
+                let _ = access_token(http, store, refresh_lock, true).await?;
+                retry_count = retry_count.saturating_add(1);
+                notify_download_retry(
+                    &on_event,
+                    retry_count,
+                    "access token refreshed during download",
+                );
+                continue;
+            }
+            Ok(response)
+                if response.status() == StatusCode::RANGE_NOT_SATISFIABLE
+                    && offset >= total_bytes =>
+            {
+                output.flush().await?;
+                return Ok(());
+            }
+            Ok(response) if is_retryable_status(response.status()) => {
+                retry_count = retry_count.saturating_add(1);
+                if retry_count > MAX_UPLOAD_RETRIES {
+                    return api_error(response).await;
+                }
+                notify_download_retry(
+                    &on_event,
+                    retry_count,
+                    &format!("download returned HTTP {}", response.status()),
+                );
+                backoff(retry_count, &pause_gate).await;
+                continue;
+            }
+            Ok(response) if response.status().is_success() => response,
+            Ok(response) => return api_error(response).await,
+            Err(error) => {
+                retry_count = retry_count.saturating_add(1);
+                if retry_count > MAX_UPLOAD_RETRIES {
+                    return Err(DriveError::Network(error));
+                }
+                notify_download_retry(
+                    &on_event,
+                    retry_count,
+                    "network interruption while starting download range",
+                );
+                backoff(retry_count, &pause_gate).await;
+                continue;
+            }
+        };
+
+        if offset > 0 && response.status() == StatusCode::OK {
+            output.set_len(0).await?;
+            output.seek(std::io::SeekFrom::Start(0)).await?;
+            offset = 0;
+        }
+
+        let mut stream_interrupted = false;
+        loop {
+            pause_gate.wait().await;
+            match response.chunk().await {
+                Ok(Some(chunk)) => {
+                    output.write_all(&chunk).await?;
+                    offset = offset.saturating_add(chunk.len() as u64);
+                    emit_download_progress(&on_event, offset, total_bytes, started_at);
+                }
+                Ok(None) => break,
+                Err(error) => {
+                    retry_count = retry_count.saturating_add(1);
+                    if retry_count > MAX_UPLOAD_RETRIES {
+                        return Err(DriveError::Network(error));
+                    }
+                    notify_download_retry(
+                        &on_event,
+                        retry_count,
+                        "download stream was interrupted; resuming with Range",
+                    );
+                    output.flush().await?;
+                    backoff(retry_count, &pause_gate).await;
+                    stream_interrupted = true;
+                    break;
+                }
+            }
+        }
+
+        if !stream_interrupted && offset < total_bytes {
+            retry_count = retry_count.saturating_add(1);
+            if retry_count > MAX_UPLOAD_RETRIES {
+                return Err(DriveError::DownloadIncomplete);
+            }
+            notify_download_retry(
+                &on_event,
+                retry_count,
+                "download ended before the expected file size; resuming",
+            );
+            backoff(retry_count, &pause_gate).await;
+        }
+    }
+
+    output.flush().await?;
+    Ok(())
+}
+
+fn emit_download_progress(
+    on_event: &Arc<dyn Fn(DownloadEvent) + Send + Sync>,
+    downloaded_bytes: u64,
+    total_bytes: u64,
+    started_at: Instant,
+) {
+    let elapsed = started_at.elapsed().as_secs_f64().max(0.001);
+    let speed = downloaded_bytes as f64 / elapsed;
+    let eta = if speed > 0.0 {
+        ((total_bytes.saturating_sub(downloaded_bytes)) as f64 / speed).ceil() as u64
+    } else {
+        0
+    };
+    on_event(DownloadEvent::Progress {
+        downloaded_bytes,
+        total_bytes,
+        speed_bytes_per_second: speed,
+        eta_seconds: eta,
+    });
+}
+
+fn notify_download_retry(
+    on_event: &Arc<dyn Fn(DownloadEvent) + Send + Sync>,
+    count: u32,
+    message: &str,
+) {
+    on_event(DownloadEvent::Retry {
+        count,
+        message: message.to_owned(),
+    });
 }
 
 pub async fn upload_zip_resumable(

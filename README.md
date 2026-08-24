@@ -24,6 +24,9 @@ Implemented:
 - Compress-folder workflow with preflight source sizing, temporary-volume free-space validation, native 7-Zip progress parsing, and cache cleanup.
 - Google Drive resumable ZIP upload using 8 MiB chunks, persisted session URI, `308 Range` recovery, retryable `429/5xx` handling, and exponential backoff.
 - Pause/resume between upload chunks, live speed/ETA/bytes/retry metrics, SQLite task/log persistence, public reader permission, and final `webViewLink`.
+- Safe Google Drive link/file-ID parser for common `drive.google.com` and `docs.google.com` URL forms with strict host and ID validation.
+- Authenticated streaming ZIP downloads using `files.get?alt=media`, HTTP Range recovery, pause/resume, backoff, and persisted task metrics.
+- ZIP metadata/capability validation, archive path traversal checks, uncompressed-size disk preflight, native 7-Zip extraction, temporary download cleanup, and automatic Explorer open.
 
 ## Requirements
 
@@ -42,6 +45,7 @@ npm run tauri:dev
 ./scripts/verify-phase1.ps1
 ./scripts/verify-phase2.ps1
 ./scripts/verify-phase3.ps1
+./scripts/verify-phase4.ps1
 ```
 
 `npm run dev` runs the browser UI only. Native folder picking, disk-space inspection, and SQLite health are available when running `npm run tauri:dev`.
@@ -109,3 +113,11 @@ Although Google Desktop application client secrets cannot be treated as confiden
 5. A successful task exposes a copyable Drive link and removes its temporary ZIP from the app cache.
 
 Resumable sessions and progress are persisted for the recovery worker scheduled in Phase 5. Phase 3 performs automatic in-process network recovery and retains a failed task's temporary ZIP for diagnostics/retry rather than deleting evidence of the failure.
+
+## Download and extract a Drive ZIP
+
+1. Open Tasks → **Download & extract**.
+2. Paste a raw Drive file ID or a standard Google Drive sharing link.
+3. Choose a local destination. **Create a new subfolder** is enabled by default to prevent accidental overwrites; duplicate names receive a numeric suffix.
+4. FileForge validates Drive metadata and download permission before creating the task, downloads with byte-range recovery, and rejects ZIP entries containing absolute or parent-traversal paths.
+5. After extraction, the temporary ZIP is deleted and the result folder opens in Windows Explorer. Failed tasks keep the downloaded ZIP for diagnostics.

@@ -25,6 +25,12 @@ export interface StartCompressUploadRequest {
   makePublic: boolean;
 }
 
+export interface StartDownloadExtractRequest {
+  driveLinkOrId: string;
+  destinationPath: string;
+  createSubfolder: boolean;
+}
+
 export async function pickFolder(): Promise<string | null> {
   return invoke<string | null>("pick_folder");
 }
@@ -87,6 +93,12 @@ export async function startCompressUpload(
   request: StartCompressUploadRequest,
 ): Promise<Task> {
   return invoke<Task>("start_compress_upload", { request });
+}
+
+export async function startDownloadExtract(
+  request: StartDownloadExtractRequest,
+): Promise<Task> {
+  return invoke<Task>("start_download_extract", { request });
 }
 
 export async function pauseTask(taskId: string): Promise<Task> {

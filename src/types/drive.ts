@@ -39,6 +39,9 @@ export interface DriveFile {
   webViewLink?: string;
   shared: boolean;
   trashed: boolean;
+  capabilities?: {
+    canDownload?: boolean;
+  };
 }
 
 export interface DriveFilePage {
@@ -50,4 +53,3 @@ export interface DriveWebViewLink {
   fileId: string;
   webViewLink?: string;
 }
-

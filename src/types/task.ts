@@ -13,6 +13,10 @@ export type TaskStage =
   | "compressing"
   | "uploading"
   | "sharing"
+  | "downloading"
+  | "inspecting"
+  | "extracting"
+  | "opening"
   | "completed"
   | "failed";
 
@@ -50,6 +54,10 @@ export const taskStageLabel: Record<TaskStage, string> = {
   compressing: "Compressing",
   uploading: "Uploading",
   sharing: "Creating share link",
+  downloading: "Downloading",
+  inspecting: "Validating ZIP",
+  extracting: "Extracting",
+  opening: "Opening folder",
   completed: "Complete",
   failed: "Failed",
 };

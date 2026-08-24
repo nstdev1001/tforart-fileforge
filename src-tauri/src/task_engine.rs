@@ -15,7 +15,7 @@ use uuid::Uuid;
 
 use crate::{
     database::{Database, TaskRecord, TaskUpdate},
-    google::{GoogleService, UploadEvent},
+    google::{parse_drive_file_id, DownloadEvent, GoogleService, UploadEvent},
     seven_zip,
 };
 
@@ -80,6 +80,14 @@ pub struct StartCompressUploadRequest {
     drive_folder_id: String,
     archive_name: Option<String>,
     make_public: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StartDownloadExtractRequest {
+    drive_link_or_id: String,
+    destination_path: String,
+    create_subfolder: bool,
 }
 
 #[tauri::command]
@@ -178,6 +186,130 @@ pub async fn start_compress_upload(
 }
 
 #[tauri::command]
+pub async fn start_download_extract(
+    request: StartDownloadExtractRequest,
+    app: AppHandle,
+    database: State<'_, Database>,
+    engine: State<'_, TaskEngine>,
+    google: State<'_, GoogleService>,
+) -> Result<TaskRecord, String> {
+    let file_id =
+        parse_drive_file_id(&request.drive_link_or_id).map_err(|error| error.to_string())?;
+    let metadata = google.metadata(file_id.clone()).await?;
+    let is_zip = metadata.mime_type.eq_ignore_ascii_case("application/zip")
+        || metadata.name.to_ascii_lowercase().ends_with(".zip");
+    if !is_zip {
+        return Err(format!(
+            "Google Drive file '{}' is not a ZIP archive",
+            metadata.name
+        ));
+    }
+    if metadata
+        .capabilities
+        .as_ref()
+        .and_then(|capabilities| capabilities.can_download)
+        == Some(false)
+    {
+        return Err("Google Drive permissions prohibit downloading this file".to_owned());
+    }
+    let compressed_bytes = metadata
+        .size
+        .as_deref()
+        .ok_or_else(|| "Google Drive metadata does not include the ZIP size".to_owned())?
+        .parse::<u64>()
+        .map_err(|_| "Google Drive returned an invalid ZIP size".to_owned())?;
+
+    let selected_destination = PathBuf::from(request.destination_path.trim())
+        .canonicalize()
+        .map_err(|error| format!("cannot access destination folder: {error}"))?;
+    if !selected_destination.is_dir() {
+        return Err("destination path must be a folder".to_owned());
+    }
+    let extraction_destination = if request.create_subfolder {
+        unique_destination_path(
+            &selected_destination,
+            &sanitize_directory_name(
+                Path::new(&metadata.name)
+                    .file_stem()
+                    .and_then(|value| value.to_str())
+                    .unwrap_or("extracted"),
+            ),
+        )
+    } else {
+        selected_destination
+    };
+    let (seven_zip_path, _) =
+        seven_zip::resolve_executable(&database).map_err(|error| error.to_string())?;
+
+    let temp_root = app
+        .path()
+        .app_cache_dir()
+        .map_err(|error| error.to_string())?
+        .join("downloads");
+    tokio::fs::create_dir_all(&temp_root)
+        .await
+        .map_err(|error| format!("cannot create download cache: {error}"))?;
+    ensure_download_space(&temp_root, compressed_bytes)?;
+
+    let task_id = Uuid::new_v4().to_string();
+    let safe_name = sanitize_archive_name(Some(&metadata.name), None);
+    let download_path = temp_root.join(format!("{task_id}-{safe_name}"));
+    let task_name = format!("Download & extract {safe_name}");
+    database
+        .create_download_extract_task(
+            &task_id,
+            &task_name,
+            request.drive_link_or_id.trim(),
+            &extraction_destination.to_string_lossy(),
+            &file_id,
+            compressed_bytes,
+        )
+        .map_err(|error| error.to_string())?;
+    database
+        .append_log(
+            &task_id,
+            "info",
+            "task.created",
+            "Download and extract task queued",
+        )
+        .map_err(|error| error.to_string())?;
+
+    let record = database
+        .list_tasks()
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .find(|task| task.id == task_id)
+        .ok_or_else(|| "created task could not be loaded".to_owned())?;
+    let control = Arc::new(TaskControl {
+        gate: Arc::new(PauseGate::new()),
+        runtime: Arc::new(StdMutex::new(TaskRuntime {
+            record: record.clone(),
+            archive_path: Some(download_path.to_string_lossy().into_owned()),
+            session_uri: None,
+        })),
+    });
+    engine
+        .controls
+        .write()
+        .await
+        .insert(task_id.clone(), control.clone());
+
+    tauri::async_runtime::spawn(run_download_workflow(
+        app,
+        task_id,
+        control,
+        DownloadWorkflowRequest {
+            file_id,
+            download_path,
+            extraction_destination,
+            seven_zip_path,
+            compressed_bytes,
+        },
+    ));
+    Ok(record)
+}
+
+#[tauri::command]
 pub async fn pause_task(
     task_id: String,
     app: AppHandle,
@@ -229,6 +361,14 @@ struct WorkflowRequest {
     make_public: bool,
     seven_zip_path: PathBuf,
     source_bytes: u64,
+}
+
+struct DownloadWorkflowRequest {
+    file_id: String,
+    download_path: PathBuf,
+    extraction_destination: PathBuf,
+    seven_zip_path: PathBuf,
+    compressed_bytes: u64,
 }
 
 async fn run_workflow(
@@ -414,6 +554,199 @@ async fn execute_workflow(
     Ok(())
 }
 
+async fn run_download_workflow(
+    app: AppHandle,
+    task_id: String,
+    control: Arc<TaskControl>,
+    request: DownloadWorkflowRequest,
+) {
+    let result = execute_download_workflow(&app, &control, &request).await;
+    if let Err(error) = result {
+        if let Ok(mut runtime) = control.runtime.lock() {
+            runtime.record.status = "failed".to_owned();
+            runtime.record.stage = "failed".to_owned();
+            runtime.record.error_message = Some(error.clone());
+            runtime.record.speed_bytes_per_second = None;
+            runtime.record.eta_seconds = None;
+        }
+        let _ = app
+            .state::<Database>()
+            .append_log(&task_id, "error", "task.failed", &error);
+        let _ = publish(&app, &control.runtime);
+    }
+    app.state::<TaskEngine>()
+        .controls
+        .write()
+        .await
+        .remove(&task_id);
+}
+
+async fn execute_download_workflow(
+    app: &AppHandle,
+    control: &Arc<TaskControl>,
+    request: &DownloadWorkflowRequest,
+) -> Result<(), String> {
+    set_stage(app, control, "running", "downloading", 5.0)?;
+    app.state::<Database>()
+        .append_log(
+            &snapshot(&control.runtime)?.id,
+            "info",
+            "download.started",
+            "Authenticated Google Drive download started",
+        )
+        .map_err(|error| error.to_string())?;
+
+    let app_for_download = app.clone();
+    let runtime_for_download = control.runtime.clone();
+    let on_download_event = Arc::new(move |event: DownloadEvent| {
+        if let Ok(mut runtime) = runtime_for_download.lock() {
+            match event {
+                DownloadEvent::Progress {
+                    downloaded_bytes,
+                    total_bytes,
+                    speed_bytes_per_second,
+                    eta_seconds,
+                } => {
+                    runtime.record.bytes_processed = downloaded_bytes;
+                    runtime.record.bytes_total = total_bytes;
+                    runtime.record.progress = if total_bytes == 0 {
+                        65.0
+                    } else {
+                        5.0 + downloaded_bytes as f64 / total_bytes as f64 * 60.0
+                    };
+                    runtime.record.speed_bytes_per_second = Some(speed_bytes_per_second);
+                    runtime.record.eta_seconds = Some(eta_seconds);
+                    runtime.record.error_message = None;
+                }
+                DownloadEvent::Retry { count, message } => {
+                    runtime.record.retry_count = runtime.record.retry_count.saturating_add(1);
+                    runtime.record.error_message = Some(format!("Retry {count}: {message}"));
+                }
+            }
+        }
+        let _ = publish(&app_for_download, &runtime_for_download);
+    });
+    app.state::<GoogleService>()
+        .download_file(
+            &request.file_id,
+            &request.download_path,
+            request.compressed_bytes,
+            control.gate.clone(),
+            on_download_event,
+        )
+        .await?;
+
+    control.gate.wait().await;
+    set_stage(app, control, "running", "inspecting", 66.0)?;
+    let archive_info = seven_zip::inspect_archive(&request.seven_zip_path, &request.download_path)
+        .await
+        .map_err(|error| error.to_string())?;
+    ensure_extraction_space(
+        &request.extraction_destination,
+        archive_info.uncompressed_bytes,
+    )?;
+    tokio::fs::create_dir_all(&request.extraction_destination)
+        .await
+        .map_err(|error| format!("cannot create extraction destination: {error}"))?;
+    app.state::<Database>()
+        .append_log(
+            &snapshot(&control.runtime)?.id,
+            "info",
+            "archive.validated",
+            &format!(
+                "ZIP contains {} entries and {} uncompressed bytes",
+                archive_info.entries, archive_info.uncompressed_bytes
+            ),
+        )
+        .map_err(|error| error.to_string())?;
+
+    {
+        let mut runtime = control.runtime.lock().map_err(|_| "task lock poisoned")?;
+        runtime.record.stage = "extracting".to_owned();
+        runtime.record.progress = 67.0;
+        runtime.record.bytes_processed = 0;
+        runtime.record.bytes_total = archive_info.uncompressed_bytes;
+        runtime.record.speed_bytes_per_second = None;
+        runtime.record.eta_seconds = None;
+    }
+    publish(app, &control.runtime)?;
+
+    let extraction_started = Instant::now();
+    let app_for_extract = app.clone();
+    let runtime_for_extract = control.runtime.clone();
+    let uncompressed_bytes = archive_info.uncompressed_bytes;
+    let on_extract_progress = Arc::new(move |percent: u8| {
+        if let Ok(mut runtime) = runtime_for_extract.lock() {
+            let processed = uncompressed_bytes.saturating_mul(percent as u64) / 100;
+            let elapsed = extraction_started.elapsed().as_secs_f64().max(0.001);
+            let speed = processed as f64 / elapsed;
+            runtime.record.progress = 67.0 + percent as f64 * 0.31;
+            runtime.record.bytes_processed = processed;
+            runtime.record.bytes_total = uncompressed_bytes;
+            runtime.record.speed_bytes_per_second = Some(speed);
+            runtime.record.eta_seconds = (speed > 0.0).then(|| {
+                ((uncompressed_bytes.saturating_sub(processed)) as f64 / speed).ceil() as u64
+            });
+        }
+        let _ = publish(&app_for_extract, &runtime_for_extract);
+    });
+    seven_zip::extract_archive(
+        &request.seven_zip_path,
+        &request.download_path,
+        &request.extraction_destination,
+        on_extract_progress,
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+
+    set_stage(app, control, "running", "opening", 99.0)?;
+    if let Err(error) = tokio::fs::remove_file(&request.download_path).await {
+        let _ = app.state::<Database>().append_log(
+            &snapshot(&control.runtime)?.id,
+            "warn",
+            "cleanup.failed",
+            &format!("extracted successfully but could not delete temporary ZIP: {error}"),
+        );
+    } else if let Ok(mut runtime) = control.runtime.lock() {
+        runtime.archive_path = None;
+    }
+
+    let destination = request.extraction_destination.clone();
+    if let Err(error) = tokio::task::spawn_blocking(move || open::that(destination))
+        .await
+        .map_err(|error| error.to_string())?
+    {
+        let _ = app.state::<Database>().append_log(
+            &snapshot(&control.runtime)?.id,
+            "warn",
+            "explorer.failed",
+            &format!("could not open extraction folder: {error}"),
+        );
+    }
+
+    {
+        let mut runtime = control.runtime.lock().map_err(|_| "task lock poisoned")?;
+        runtime.record.status = "completed".to_owned();
+        runtime.record.stage = "completed".to_owned();
+        runtime.record.progress = 100.0;
+        runtime.record.bytes_processed = runtime.record.bytes_total;
+        runtime.record.speed_bytes_per_second = None;
+        runtime.record.eta_seconds = Some(0);
+        runtime.record.error_message = None;
+        runtime.session_uri = None;
+    }
+    publish(app, &control.runtime)?;
+    app.state::<Database>()
+        .append_log(
+            &snapshot(&control.runtime)?.id,
+            "info",
+            "task.completed",
+            "ZIP downloaded, extracted, cleaned up, and opened in Explorer",
+        )
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
 fn set_stage(
     app: &AppHandle,
     control: &TaskControl,
@@ -481,6 +814,84 @@ fn ensure_temp_space(path: &Path, source_bytes: u64) -> Result<(), String> {
     Ok(())
 }
 
+fn ensure_download_space(path: &Path, download_bytes: u64) -> Result<(), String> {
+    let free = fs2::available_space(path)
+        .map_err(|error| format!("cannot inspect download cache space: {error}"))?;
+    let required = download_bytes.saturating_add(TEMP_SPACE_SAFETY_BYTES);
+    if free < required {
+        return Err(format!(
+            "insufficient download cache space: {free} bytes available, {required} required"
+        ));
+    }
+    Ok(())
+}
+
+fn ensure_extraction_space(destination: &Path, uncompressed_bytes: u64) -> Result<(), String> {
+    let existing_path = if destination.exists() {
+        destination
+    } else {
+        destination
+            .parent()
+            .ok_or_else(|| "extraction destination has no parent directory".to_owned())?
+    };
+    let free = fs2::available_space(existing_path)
+        .map_err(|error| format!("cannot inspect extraction disk space: {error}"))?;
+    let required = uncompressed_bytes.saturating_add(TEMP_SPACE_SAFETY_BYTES);
+    if free < required {
+        return Err(format!(
+            "insufficient extraction disk space: {free} bytes available, {required} required"
+        ));
+    }
+    Ok(())
+}
+
+fn unique_destination_path(parent: &Path, base_name: &str) -> PathBuf {
+    let initial = parent.join(base_name);
+    if !initial.exists() {
+        return initial;
+    }
+    for suffix in 2..10_000 {
+        let candidate = parent.join(format!("{base_name} ({suffix})"));
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+    parent.join(format!("{base_name}-{}", Uuid::new_v4()))
+}
+
+fn sanitize_directory_name(value: &str) -> String {
+    let safe: String = value
+        .trim()
+        .chars()
+        .map(|character| {
+            if matches!(
+                character,
+                '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*'
+            ) {
+                '_'
+            } else {
+                character
+            }
+        })
+        .collect();
+    let safe = safe.trim_end_matches(|character| character == '.' || character == ' ');
+    let device_name = safe
+        .split('.')
+        .next()
+        .unwrap_or_default()
+        .to_ascii_uppercase();
+    let reserved = matches!(device_name.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || (device_name.len() == 4
+            && (device_name.starts_with("COM") || device_name.starts_with("LPT"))
+            && device_name.as_bytes()[3].is_ascii_digit()
+            && device_name.as_bytes()[3] != b'0');
+    if safe.is_empty() || matches!(safe, "." | "..") || reserved {
+        "extracted".to_owned()
+    } else {
+        safe.to_owned()
+    }
+}
+
 fn validate_drive_folder_id(value: &str) -> Result<(), String> {
     let valid = !value.is_empty()
         && value.len() <= 256
@@ -542,5 +953,13 @@ mod tests {
         assert!(validate_drive_folder_id("root").is_ok());
         assert!(validate_drive_folder_id("1Abc_def-2").is_ok());
         assert!(validate_drive_folder_id("root' or true").is_err());
+    }
+
+    #[test]
+    fn extraction_directory_name_is_windows_safe() {
+        assert_eq!(sanitize_directory_name("client:render?"), "client_render_");
+        assert_eq!(sanitize_directory_name(".."), "extracted");
+        assert_eq!(sanitize_directory_name("CON"), "extracted");
+        assert_eq!(sanitize_directory_name("..."), "extracted");
     }
 }

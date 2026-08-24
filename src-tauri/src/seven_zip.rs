@@ -1,5 +1,5 @@
 use std::{
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
     process::Stdio,
     sync::Arc,
 };
@@ -27,6 +27,12 @@ pub struct SevenZipStatus {
     pub path: Option<String>,
     pub version: Option<String>,
     pub source: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ArchiveInfo {
+    pub uncompressed_bytes: u64,
+    pub entries: usize,
 }
 
 #[derive(Debug, Error)]
@@ -189,6 +195,111 @@ pub async fn compress_folder(
     Ok(())
 }
 
+pub async fn inspect_archive(
+    executable: &Path,
+    archive: &Path,
+) -> Result<ArchiveInfo, SevenZipError> {
+    let mut command = Command::new(executable);
+    command
+        .arg("l")
+        .arg("-slt")
+        .arg("-ba")
+        .arg(archive)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    configure_no_window(&mut command);
+    let output = command.output().await?;
+    if !output.status.success() {
+        return Err(SevenZipError::Compression(
+            String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+        ));
+    }
+    parse_archive_listing(&String::from_utf8_lossy(&output.stdout))
+}
+
+pub async fn extract_archive(
+    executable: &Path,
+    archive: &Path,
+    destination: &Path,
+    on_progress: Arc<dyn Fn(u8) + Send + Sync>,
+) -> Result<(), SevenZipError> {
+    let mut command = Command::new(executable);
+    command
+        .arg("x")
+        .arg(archive)
+        .arg(format!("-o{}", destination.display()))
+        .arg("-bsp1")
+        .arg("-bb0")
+        .arg("-y")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    configure_no_window(&mut command);
+
+    let mut child = command.spawn()?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| SevenZipError::Compression("7-Zip stdout was not captured".to_owned()))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| SevenZipError::Compression("7-Zip stderr was not captured".to_owned()))?;
+    let ((stdout_result, stdout_text), (stderr_result, stderr_text)) = tokio::join!(
+        read_progress_stream(stdout, on_progress.clone()),
+        read_progress_stream(stderr, on_progress.clone())
+    );
+    stdout_result?;
+    stderr_result?;
+    let exit = child.wait().await?;
+    if !exit.success() {
+        let detail = if stderr_text.trim().is_empty() {
+            stdout_text
+        } else {
+            stderr_text
+        };
+        return Err(SevenZipError::Compression(detail.trim().to_owned()));
+    }
+    on_progress(100);
+    Ok(())
+}
+
+fn parse_archive_listing(listing: &str) -> Result<ArchiveInfo, SevenZipError> {
+    let mut uncompressed_bytes = 0_u64;
+    let mut entries = 0_usize;
+    for line in listing.lines() {
+        if let Some(entry) = line.strip_prefix("Path = ") {
+            validate_archive_entry(entry.trim())?;
+            entries += 1;
+        } else if let Some(size) = line.strip_prefix("Size = ") {
+            if let Ok(size) = size.trim().parse::<u64>() {
+                uncompressed_bytes = uncompressed_bytes.saturating_add(size);
+            }
+        }
+    }
+    Ok(ArchiveInfo {
+        uncompressed_bytes,
+        entries,
+    })
+}
+
+fn validate_archive_entry(entry: &str) -> Result<(), SevenZipError> {
+    let path = Path::new(entry);
+    let unsafe_component = path.components().any(|component| {
+        matches!(
+            component,
+            Component::ParentDir | Component::RootDir | Component::Prefix(_)
+        )
+    });
+    if entry.is_empty() || path.is_absolute() || unsafe_component {
+        return Err(SevenZipError::Compression(format!(
+            "archive contains an unsafe path: {entry}"
+        )));
+    }
+    Ok(())
+}
+
 async fn read_progress_stream<R: AsyncRead + Unpin>(
     mut reader: R,
     on_progress: Arc<dyn Fn(u8) + Send + Sync>,
@@ -316,5 +427,28 @@ mod tests {
         assert!(archive.is_file());
         assert!(archive.metadata().expect("archive metadata").len() > 0);
         assert!(progress.lock().expect("progress lock").contains(&100));
+
+        let info = inspect_archive(&executable, &archive)
+            .await
+            .expect("archive inspection");
+        assert_eq!(info.entries, 1);
+        assert_eq!(info.uncompressed_bytes, 27);
+
+        let extracted = temp.path().join("extracted");
+        std::fs::create_dir(&extracted).expect("extraction directory");
+        extract_archive(&executable, &archive, &extracted, Arc::new(|_| {}))
+            .await
+            .expect("7-Zip extraction");
+        assert_eq!(
+            std::fs::read(extracted.join("hello.txt")).expect("extracted content"),
+            b"FileForge 7-Zip integration"
+        );
+    }
+
+    #[test]
+    fn archive_listing_blocks_zip_slip_paths() {
+        assert!(parse_archive_listing("Path = safe/file.txt\nSize = 10").is_ok());
+        assert!(parse_archive_listing("Path = ../escape.txt\nSize = 10").is_err());
+        assert!(parse_archive_listing("Path = C:\\escape.txt\nSize = 10").is_err());
     }
 }
