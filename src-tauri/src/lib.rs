@@ -3,11 +3,13 @@ mod database;
 mod google;
 mod seven_zip;
 mod task_engine;
+mod watcher;
 
 use database::Database;
 use google::GoogleService;
 use task_engine::TaskEngine;
 use tauri::Manager;
+use watcher::WatcherService;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -25,9 +27,11 @@ pub fn run() {
             app.manage(database);
             app.manage(GoogleService::new());
             app.manage(TaskEngine::new(concurrent_tasks));
+            app.manage(WatcherService::new());
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
-                task_engine::recover_unfinished_tasks(handle).await;
+                task_engine::recover_unfinished_tasks(handle.clone()).await;
+                watcher::restore_enabled_watchers(handle).await;
             });
             Ok(())
         })
@@ -52,6 +56,11 @@ pub fn run() {
             task_engine::start_download_extract,
             task_engine::pause_task,
             task_engine::resume_task,
+            watcher::list_watchers,
+            watcher::create_watcher,
+            watcher::stop_watcher,
+            watcher::restart_watcher,
+            watcher::delete_watcher,
         ])
         .run(tauri::generate_context!())
         .expect("failed to run FileForge");

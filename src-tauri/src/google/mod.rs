@@ -44,13 +44,41 @@ impl GoogleService {
         pause_gate: std::sync::Arc<crate::task_engine::PauseGate>,
         on_event: std::sync::Arc<dyn Fn(drive::UploadEvent) + Send + Sync>,
     ) -> Result<DriveFile, String> {
-        drive::upload_zip_resumable(
+        drive::upload_file_resumable(
             &self.http,
             &self.token_store,
             &self.refresh_lock,
             archive_path,
             upload_name,
             drive_folder_id,
+            "application/zip",
+            existing_session_uri,
+            pause_gate,
+            on_event,
+        )
+        .await
+        .map_err(|error| error.to_string())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn upload_file_resumable(
+        &self,
+        file_path: &std::path::Path,
+        upload_name: &str,
+        drive_folder_id: &str,
+        mime_type: &str,
+        existing_session_uri: Option<&str>,
+        pause_gate: std::sync::Arc<crate::task_engine::PauseGate>,
+        on_event: std::sync::Arc<dyn Fn(drive::UploadEvent) + Send + Sync>,
+    ) -> Result<DriveFile, String> {
+        drive::upload_file_resumable(
+            &self.http,
+            &self.token_store,
+            &self.refresh_lock,
+            file_path,
+            upload_name,
+            drive_folder_id,
+            mime_type,
             existing_session_uri,
             pause_gate,
             on_event,

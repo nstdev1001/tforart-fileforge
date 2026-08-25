@@ -11,7 +11,7 @@ use tauri::{AppHandle, Manager, Runtime};
 use thiserror::Error;
 
 const DATABASE_FILE: &str = "fileforge.db";
-const LATEST_SCHEMA_VERSION: i64 = 3;
+const LATEST_SCHEMA_VERSION: i64 = 4;
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -43,6 +43,7 @@ pub struct RecoverableTask {
     pub archive_path: Option<String>,
     pub resumable_session_uri: Option<String>,
     pub options_json: String,
+    pub watcher_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -55,6 +56,29 @@ pub struct LogRecord {
     pub message: String,
     pub context_json: Option<String>,
     pub created_at: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WatcherRecord {
+    pub id: String,
+    pub name: String,
+    pub local_path: String,
+    pub drive_folder_id: Option<String>,
+    pub enabled: bool,
+    pub status: String,
+    pub settling_delay_ms: u64,
+    pub include_extensions: Vec<String>,
+    pub exclude_patterns: Vec<String>,
+    pub auto_stop_seconds: u64,
+    pub last_activity_at: Option<String>,
+    pub drive_web_view_link: Option<String>,
+    pub files_detected: u64,
+    pub files_uploaded: u64,
+    pub files_failed: u64,
+    pub error_message: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
 }
 
 #[derive(Clone, Debug)]
@@ -169,6 +193,7 @@ impl Database {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn create_download_extract_task(
         &self,
         id: &str,
@@ -196,6 +221,154 @@ impl Database {
             ],
         )?;
         Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_watch_upload_task(
+        &self,
+        id: &str,
+        watcher_id: &str,
+        name: &str,
+        source_path: &str,
+        drive_folder_id: &str,
+        bytes_total: u64,
+        options_json: &str,
+    ) -> Result<(), DatabaseError> {
+        let connection = self.lock()?;
+        connection.execute(
+            "INSERT INTO tasks (
+               id, watcher_id, name, task_type, status, stage, source_path,
+               destination_path, bytes_total, options_json
+             ) VALUES (?1, ?2, ?3, 'watch_upload', 'queued', 'queued', ?4, ?5, ?6, ?7)",
+            params![
+                id,
+                watcher_id,
+                name,
+                source_path,
+                drive_folder_id,
+                bytes_total,
+                options_json
+            ],
+        )?;
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_watcher(
+        &self,
+        id: &str,
+        name: &str,
+        local_path: &str,
+        drive_folder_id: &str,
+        settling_delay_ms: u64,
+        include_extensions: &[String],
+        auto_stop_seconds: u64,
+    ) -> Result<(), DatabaseError> {
+        let connection = self.lock()?;
+        connection.execute(
+            "INSERT INTO watchers (
+               id, name, local_path, drive_folder_id, enabled, status,
+               settling_delay_ms, include_extensions, auto_stop_seconds
+             ) VALUES (?1, ?2, ?3, ?4, 1, 'watching', ?5, ?6, ?7)",
+            params![
+                id,
+                name,
+                local_path,
+                drive_folder_id,
+                settling_delay_ms,
+                serde_json::to_string(include_extensions).unwrap_or_else(|_| "[]".to_owned()),
+                auto_stop_seconds
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_watchers(&self) -> Result<Vec<WatcherRecord>, DatabaseError> {
+        let connection = self.lock()?;
+        let mut statement = connection.prepare(
+            "SELECT id, name, local_path, drive_folder_id, enabled, status,
+                    settling_delay_ms, include_extensions, exclude_patterns,
+                    auto_stop_seconds, last_activity_at, drive_web_view_link,
+                    files_detected, files_uploaded, files_failed, error_message,
+                    created_at, updated_at
+             FROM watchers ORDER BY created_at DESC",
+        )?;
+        let rows = statement.query_map([], map_watcher_record)?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(DatabaseError::from)
+    }
+
+    pub fn list_enabled_watchers(&self) -> Result<Vec<WatcherRecord>, DatabaseError> {
+        let connection = self.lock()?;
+        let mut statement = connection.prepare(
+            "SELECT id, name, local_path, drive_folder_id, enabled, status,
+                    settling_delay_ms, include_extensions, exclude_patterns,
+                    auto_stop_seconds, last_activity_at, drive_web_view_link,
+                    files_detected, files_uploaded, files_failed, error_message,
+                    created_at, updated_at
+             FROM watchers WHERE enabled = 1 ORDER BY created_at ASC",
+        )?;
+        let rows = statement.query_map([], map_watcher_record)?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(DatabaseError::from)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn update_watcher_state(
+        &self,
+        id: &str,
+        enabled: bool,
+        status: &str,
+        detected_delta: u64,
+        uploaded_delta: u64,
+        failed_delta: u64,
+        drive_web_view_link: Option<&str>,
+        error_message: Option<&str>,
+        touch_activity: bool,
+    ) -> Result<(), DatabaseError> {
+        let connection = self.lock()?;
+        connection.execute(
+            "UPDATE watchers SET enabled = ?2, status = ?3,
+                    files_detected = files_detected + ?4,
+                    files_uploaded = files_uploaded + ?5,
+                    files_failed = files_failed + ?6,
+                    drive_web_view_link = COALESCE(?7, drive_web_view_link),
+                    error_message = ?8,
+                    last_activity_at = CASE WHEN ?9
+                      THEN strftime('%Y-%m-%dT%H:%M:%fZ', 'now') ELSE last_activity_at END,
+                    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+             WHERE id = ?1",
+            params![
+                id,
+                enabled,
+                status,
+                detected_delta,
+                uploaded_delta,
+                failed_delta,
+                drive_web_view_link,
+                error_message,
+                touch_activity
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_watcher(&self, id: &str) -> Result<(), DatabaseError> {
+        let connection = self.lock()?;
+        connection.execute("DELETE FROM watchers WHERE id = ?1 AND enabled = 0", [id])?;
+        Ok(())
+    }
+
+    pub fn count_active_watch_uploads(&self, watcher_id: &str) -> Result<u64, DatabaseError> {
+        let connection = self.lock()?;
+        connection
+            .query_row(
+                "SELECT COUNT(*) FROM tasks
+                 WHERE watcher_id = ?1 AND status IN ('queued', 'running', 'paused')",
+                [watcher_id],
+                |row| row.get(0),
+            )
+            .map_err(DatabaseError::from)
     }
 
     pub fn update_task(&self, task: &TaskUpdate<'_>) -> Result<(), DatabaseError> {
@@ -295,10 +468,10 @@ impl Database {
                     destination_path, progress, bytes_processed, bytes_total,
                     speed_bytes_per_second, eta_seconds, retry_count, error_message,
                     drive_file_id, drive_web_view_link, created_at, updated_at,
-                    archive_path, resumable_session_uri, options_json
+                    archive_path, resumable_session_uri, options_json, watcher_id
              FROM tasks
              WHERE status IN ('queued', 'running', 'paused')
-               AND task_type IN ('compress_upload', 'download_extract')
+               AND task_type IN ('compress_upload', 'download_extract', 'watch_upload')
              ORDER BY created_at ASC",
         )?;
         let rows = statement.query_map([], |row| {
@@ -309,6 +482,7 @@ impl Database {
                 archive_path: row.get(18)?,
                 resumable_session_uri: row.get(19)?,
                 options_json: row.get(20)?,
+                watcher_id: row.get(21)?,
             })
         })?;
         rows.collect::<Result<Vec<_>, _>>()
@@ -394,6 +568,14 @@ fn apply_migrations(connection: &mut Connection) -> Result<(), rusqlite::Error> 
         transaction.commit()?;
     }
 
+    let current_version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if current_version < 4 {
+        let transaction = connection.transaction()?;
+        transaction.execute_batch(include_str!("../migrations/0004_watch_automation.sql"))?;
+        transaction.pragma_update(None, "user_version", 4)?;
+        transaction.commit()?;
+    }
+
     let final_version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
     if final_version != LATEST_SCHEMA_VERSION {
         return Err(rusqlite::Error::InvalidQuery);
@@ -423,6 +605,31 @@ fn task_record_from_row(
         error_message: row.get(13)?,
         drive_file_id: row.get(14)?,
         drive_web_view_link: row.get(15)?,
+        created_at: row.get(16)?,
+        updated_at: row.get(17)?,
+    })
+}
+
+fn map_watcher_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<WatcherRecord> {
+    let include_json: String = row.get(7)?;
+    let exclude_json: String = row.get(8)?;
+    Ok(WatcherRecord {
+        id: row.get(0)?,
+        name: row.get(1)?,
+        local_path: row.get(2)?,
+        drive_folder_id: row.get(3)?,
+        enabled: row.get(4)?,
+        status: row.get(5)?,
+        settling_delay_ms: row.get(6)?,
+        include_extensions: serde_json::from_str(&include_json).unwrap_or_default(),
+        exclude_patterns: serde_json::from_str(&exclude_json).unwrap_or_default(),
+        auto_stop_seconds: row.get(9)?,
+        last_activity_at: row.get(10)?,
+        drive_web_view_link: row.get(11)?,
+        files_detected: row.get(12)?,
+        files_uploaded: row.get(13)?,
+        files_failed: row.get(14)?,
+        error_message: row.get(15)?,
         created_at: row.get(16)?,
         updated_at: row.get(17)?,
     })
@@ -474,6 +681,16 @@ mod tests {
             .optional()
             .expect("inspect recovery columns");
         assert_eq!(recovery_column.as_deref(), Some("options_json"));
+
+        let watcher_column: Option<String> = connection
+            .query_row(
+                "SELECT name FROM pragma_table_info('tasks') WHERE name = 'watcher_id'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .expect("inspect watcher task columns");
+        assert_eq!(watcher_column.as_deref(), Some("watcher_id"));
     }
 
     #[test]
@@ -536,5 +753,69 @@ mod tests {
         let logs = database.list_task_logs("recover-me").expect("task logs");
         assert_eq!(logs.len(), 1);
         assert_eq!(logs[0].event, "upload.started");
+    }
+
+    #[test]
+    fn watcher_and_child_upload_state_round_trip() {
+        let directory = tempfile::tempdir().expect("temporary database directory");
+        let database = Database::open(directory.path().join("watcher.db")).expect("database");
+        let extensions = vec!["jpg".to_owned(), "mp4".to_owned()];
+        database
+            .create_watcher(
+                "watcher-one",
+                "Render watcher",
+                "C:\\renders",
+                "drive-folder",
+                3_000,
+                &extensions,
+                30,
+            )
+            .expect("create watcher");
+        database
+            .create_watch_upload_task(
+                "watch-task",
+                "watcher-one",
+                "Auto-upload frame.jpg",
+                "C:\\renders\\frame.jpg",
+                "drive-folder",
+                128,
+                r#"{"watcherId":"watcher-one","uploadName":"frame.jpg","driveFolderId":"drive-folder","mimeType":"image/jpeg"}"#,
+            )
+            .expect("create child task");
+
+        assert_eq!(
+            database
+                .count_active_watch_uploads("watcher-one")
+                .expect("active uploads"),
+            1
+        );
+        database
+            .update_watcher_state(
+                "watcher-one",
+                true,
+                "watching",
+                1,
+                1,
+                0,
+                Some("https://drive.google.com/folder"),
+                None,
+                true,
+            )
+            .expect("update watcher");
+        let watchers = database.list_watchers().expect("list watchers");
+        assert_eq!(watchers.len(), 1);
+        assert_eq!(watchers[0].include_extensions, extensions);
+        assert_eq!(watchers[0].files_detected, 1);
+        assert_eq!(watchers[0].files_uploaded, 1);
+        assert_eq!(
+            watchers[0].drive_web_view_link.as_deref(),
+            Some("https://drive.google.com/folder")
+        );
+
+        let recovered = database
+            .list_recoverable_tasks()
+            .expect("recover child upload");
+        assert_eq!(recovered[0].watcher_id.as_deref(), Some("watcher-one"));
+        assert_eq!(recovered[0].task_type, "watch_upload");
     }
 }

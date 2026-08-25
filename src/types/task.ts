@@ -56,6 +56,29 @@ export interface WorkerPoolConfig {
   activeTasks: number;
 }
 
+export type WatcherStatus = "watching" | "draining" | "stopped" | "failed";
+
+export interface FolderWatcher {
+  id: string;
+  name: string;
+  localPath: string;
+  driveFolderId?: string;
+  enabled: boolean;
+  status: WatcherStatus;
+  settlingDelayMs: number;
+  includeExtensions: string[];
+  excludePatterns: string[];
+  autoStopSeconds: number;
+  lastActivityAt?: string;
+  driveWebViewLink?: string;
+  filesDetected: number;
+  filesUploaded: number;
+  filesFailed: number;
+  errorMessage?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export const taskStatusLabel: Record<TaskStatus, string> = {
   queued: "Queued",
   running: "Running",

@@ -180,6 +180,15 @@ pub struct StartDownloadExtractRequest {
     create_subfolder: bool,
 }
 
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WatchUploadOptions {
+    watcher_id: String,
+    upload_name: String,
+    drive_folder_id: String,
+    mime_type: String,
+}
+
 #[tauri::command]
 pub fn list_tasks(database: State<'_, Database>) -> Result<Vec<TaskRecord>, String> {
     database.list_tasks().map_err(|error| error.to_string())
@@ -454,6 +463,99 @@ pub async fn start_download_extract(
     Ok(record)
 }
 
+pub async fn enqueue_watch_upload(
+    app: AppHandle,
+    watcher_id: String,
+    source_path: PathBuf,
+    drive_folder_id: String,
+) -> Result<TaskRecord, String> {
+    validate_drive_folder_id(&drive_folder_id)?;
+    let source_path = source_path
+        .canonicalize()
+        .map_err(|error| format!("cannot access detected file: {error}"))?;
+    if !source_path.is_file() {
+        return Err("detected path is not a file".to_owned());
+    }
+    let bytes_total = tokio::fs::metadata(&source_path)
+        .await
+        .map_err(|error| format!("cannot inspect detected file: {error}"))?
+        .len();
+    let upload_name = source_path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| "detected file name is not valid Unicode".to_owned())?
+        .to_owned();
+    let mime_type = mime_type_for_path(&source_path).to_owned();
+    let options = WatchUploadOptions {
+        watcher_id: watcher_id.clone(),
+        upload_name: upload_name.clone(),
+        drive_folder_id: drive_folder_id.clone(),
+        mime_type: mime_type.clone(),
+    };
+    let options_json = serde_json::to_string(&options)
+        .map_err(|error| format!("cannot serialize watcher task: {error}"))?;
+    let task_id = Uuid::new_v4().to_string();
+    let task_name = format!("Auto-upload {upload_name}");
+    let database = app.state::<Database>();
+    database
+        .create_watch_upload_task(
+            &task_id,
+            &watcher_id,
+            &task_name,
+            &source_path.to_string_lossy(),
+            &drive_folder_id,
+            bytes_total,
+            &options_json,
+        )
+        .map_err(|error| error.to_string())?;
+    database
+        .append_log(
+            &task_id,
+            "info",
+            "watch.file_stable",
+            "File remained unchanged for the configured settling delay",
+        )
+        .map_err(|error| error.to_string())?;
+    let record = database
+        .list_tasks()
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .find(|task| task.id == task_id)
+        .ok_or_else(|| "watch upload task could not be loaded".to_owned())?;
+    let control = Arc::new(TaskControl {
+        gate: Arc::new(PauseGate::new()),
+        runtime: Arc::new(StdMutex::new(TaskRuntime {
+            record: record.clone(),
+            archive_path: None,
+            session_uri: None,
+        })),
+    });
+    let pool = {
+        let engine = app.state::<TaskEngine>();
+        engine
+            .controls
+            .write()
+            .await
+            .insert(task_id.clone(), control.clone());
+        engine.pool.clone()
+    };
+    tauri::async_runtime::spawn(run_watch_upload_workflow(
+        app,
+        task_id,
+        control,
+        WatchWorkflowRequest {
+            watcher_id,
+            source_path,
+            upload_name,
+            drive_folder_id,
+            mime_type,
+            existing_session_uri: None,
+        },
+        pool,
+    ));
+    Ok(record)
+}
+
 #[tauri::command]
 pub async fn pause_task(
     task_id: String,
@@ -521,6 +623,7 @@ pub async fn recover_unfinished_tasks(app: AppHandle) {
 
     for task in tasks {
         let task_id = task.record.id.clone();
+        let watcher_id = task.watcher_id.clone();
         if let Err(error) = recover_task(&app, task).await {
             let _ = app
                 .state::<TaskEngine>()
@@ -538,6 +641,9 @@ pub async fn recover_unfinished_tasks(app: AppHandle) {
                 if let Some(record) = tasks.into_iter().find(|record| record.id == task_id) {
                     let _ = app.emit("task-progress", record);
                 }
+            }
+            if let Some(watcher_id) = watcher_id {
+                finish_watcher_file(&app, &watcher_id, false, Some(&error));
             }
             eprintln!("FileForge could not recover task {task_id}: {error}");
         }
@@ -569,14 +675,15 @@ async fn recover_task(app: &AppHandle, task: RecoverableTask) -> Result<(), Stri
         })),
     });
 
-    let engine = app.state::<TaskEngine>();
-    engine
-        .controls
-        .write()
-        .await
-        .insert(record.id.clone(), control.clone());
-    let pool = engine.pool.clone();
-    drop(engine);
+    let pool = {
+        let engine = app.state::<TaskEngine>();
+        engine
+            .controls
+            .write()
+            .await
+            .insert(record.id.clone(), control.clone());
+        engine.pool.clone()
+    };
     publish(app, &control.runtime)?;
     app.state::<Database>()
         .append_log(
@@ -712,6 +819,49 @@ async fn recover_task(app: &AppHandle, task: RecoverableTask) -> Result<(), Stri
                 app, task_id, control, request, pool,
             ));
         }
+        "watch_upload" => {
+            let options = serde_json::from_str::<WatchUploadOptions>(&task.options_json).ok();
+            let source_path = PathBuf::from(&record.source_path);
+            if !source_path.is_file() {
+                return Err("watched file no longer exists".to_owned());
+            }
+            let watcher_id = options
+                .as_ref()
+                .map(|value| value.watcher_id.clone())
+                .or(task.watcher_id)
+                .ok_or_else(|| "recovered watch upload has no watcher ID".to_owned())?;
+            let upload_name = options
+                .as_ref()
+                .map(|value| value.upload_name.clone())
+                .or_else(|| {
+                    source_path
+                        .file_name()
+                        .and_then(|value| value.to_str())
+                        .map(str::to_owned)
+                })
+                .ok_or_else(|| "recovered watched file has no valid name".to_owned())?;
+            let drive_folder_id = options
+                .as_ref()
+                .map(|value| value.drive_folder_id.clone())
+                .or_else(|| record.destination_path.clone())
+                .ok_or_else(|| "recovered watch upload has no Drive folder ID".to_owned())?;
+            let mime_type = options
+                .map(|value| value.mime_type)
+                .unwrap_or_else(|| mime_type_for_path(&source_path).to_owned());
+            let request = WatchWorkflowRequest {
+                watcher_id,
+                source_path,
+                upload_name,
+                drive_folder_id,
+                mime_type,
+                existing_session_uri: task.resumable_session_uri,
+            };
+            let task_id = record.id.clone();
+            let app = app.clone();
+            tauri::async_runtime::spawn(run_watch_upload_workflow(
+                app, task_id, control, request, pool,
+            ));
+        }
         _ => {
             return Err(format!(
                 "unsupported recoverable task type: {}",
@@ -743,6 +893,15 @@ struct DownloadWorkflowRequest {
     compressed_bytes: u64,
     recovery_stage: Option<String>,
     resume_existing: bool,
+}
+
+struct WatchWorkflowRequest {
+    watcher_id: String,
+    source_path: PathBuf,
+    upload_name: String,
+    drive_folder_id: String,
+    mime_type: String,
+    existing_session_uri: Option<String>,
 }
 
 async fn run_workflow(
@@ -992,6 +1151,198 @@ async fn run_download_workflow(
         .write()
         .await
         .remove(&task_id);
+}
+
+async fn run_watch_upload_workflow(
+    app: AppHandle,
+    task_id: String,
+    control: Arc<TaskControl>,
+    request: WatchWorkflowRequest,
+    pool: Arc<WorkerPool>,
+) {
+    let _permit = match wait_for_worker(&app, &task_id, &control, &pool).await {
+        Ok(permit) => permit,
+        Err(error) => {
+            fail_task(&app, &task_id, &control, &error);
+            finish_watcher_file(&app, &request.watcher_id, false, Some(&error));
+            app.state::<TaskEngine>()
+                .controls
+                .write()
+                .await
+                .remove(&task_id);
+            return;
+        }
+    };
+    match execute_watch_upload_workflow(&app, &control, &request).await {
+        Ok(()) => finish_watcher_file(&app, &request.watcher_id, true, None),
+        Err(error) => {
+            fail_task(&app, &task_id, &control, &error);
+            finish_watcher_file(&app, &request.watcher_id, false, Some(&error));
+        }
+    }
+    app.state::<TaskEngine>()
+        .controls
+        .write()
+        .await
+        .remove(&task_id);
+}
+
+async fn execute_watch_upload_workflow(
+    app: &AppHandle,
+    control: &Arc<TaskControl>,
+    request: &WatchWorkflowRequest,
+) -> Result<(), String> {
+    if !request.source_path.is_file() {
+        return Err("watched file no longer exists".to_owned());
+    }
+    let total_bytes = tokio::fs::metadata(&request.source_path)
+        .await
+        .map_err(|error| format!("cannot inspect watched file: {error}"))?
+        .len();
+    {
+        let mut runtime = control.runtime.lock().map_err(|_| "task lock poisoned")?;
+        runtime.record.status = "running".to_owned();
+        runtime.record.stage = "uploading".to_owned();
+        runtime.record.bytes_total = total_bytes;
+        runtime.record.speed_bytes_per_second = None;
+        runtime.record.eta_seconds = None;
+        runtime.record.error_message = None;
+    }
+    publish(app, &control.runtime)?;
+    app.state::<Database>()
+        .append_log(
+            &snapshot(&control.runtime)?.id,
+            "info",
+            if request.existing_session_uri.is_some() {
+                "watch.upload_resumed"
+            } else {
+                "watch.upload_started"
+            },
+            "Uploading stable watched file to Google Drive",
+        )
+        .map_err(|error| error.to_string())?;
+
+    let app_for_upload = app.clone();
+    let runtime_for_upload = control.runtime.clone();
+    let on_upload_event = Arc::new(move |event: UploadEvent| {
+        if let Ok(mut runtime) = runtime_for_upload.lock() {
+            match event {
+                UploadEvent::SessionCreated(uri) => runtime.session_uri = Some(uri),
+                UploadEvent::Progress {
+                    uploaded_bytes,
+                    total_bytes,
+                    speed_bytes_per_second,
+                    eta_seconds,
+                } => {
+                    runtime.record.bytes_processed = uploaded_bytes;
+                    runtime.record.bytes_total = total_bytes;
+                    runtime.record.progress = if total_bytes == 0 {
+                        99.0
+                    } else {
+                        uploaded_bytes as f64 / total_bytes as f64 * 99.0
+                    };
+                    runtime.record.speed_bytes_per_second = Some(speed_bytes_per_second);
+                    runtime.record.eta_seconds = Some(eta_seconds);
+                    runtime.record.error_message = None;
+                }
+                UploadEvent::Retry { count, message } => {
+                    runtime.record.retry_count = runtime.record.retry_count.saturating_add(1);
+                    runtime.record.error_message = Some(format!("Retry {count}: {message}"));
+                    let _ = app_for_upload.state::<Database>().append_log(
+                        &runtime.record.id,
+                        "warn",
+                        "watch.upload_retry",
+                        &message,
+                    );
+                }
+            }
+        }
+        let _ = publish(&app_for_upload, &runtime_for_upload);
+    });
+    let uploaded = app
+        .state::<GoogleService>()
+        .upload_file_resumable(
+            &request.source_path,
+            &request.upload_name,
+            &request.drive_folder_id,
+            &request.mime_type,
+            request.existing_session_uri.as_deref(),
+            control.gate.clone(),
+            on_upload_event,
+        )
+        .await?;
+    let metadata = app
+        .state::<GoogleService>()
+        .metadata(uploaded.id.clone())
+        .await?;
+    {
+        let mut runtime = control.runtime.lock().map_err(|_| "task lock poisoned")?;
+        runtime.record.status = "completed".to_owned();
+        runtime.record.stage = "completed".to_owned();
+        runtime.record.progress = 100.0;
+        runtime.record.bytes_processed = total_bytes;
+        runtime.record.bytes_total = total_bytes;
+        runtime.record.speed_bytes_per_second = None;
+        runtime.record.eta_seconds = Some(0);
+        runtime.record.error_message = None;
+        runtime.record.drive_file_id = Some(uploaded.id);
+        runtime.record.drive_web_view_link = metadata.web_view_link;
+        runtime.session_uri = None;
+    }
+    publish(app, &control.runtime)?;
+    app.state::<Database>()
+        .append_log(
+            &snapshot(&control.runtime)?.id,
+            "info",
+            "task.completed",
+            "Watched file uploaded successfully",
+        )
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+fn finish_watcher_file(app: &AppHandle, watcher_id: &str, success: bool, error: Option<&str>) {
+    let current = app
+        .state::<Database>()
+        .list_watchers()
+        .ok()
+        .and_then(|watchers| {
+            watchers
+                .into_iter()
+                .find(|watcher| watcher.id == watcher_id)
+        });
+    let (enabled, status) = current
+        .as_ref()
+        .map(|watcher| (watcher.enabled, watcher.status.as_str()))
+        .unwrap_or((false, "failed"));
+    let error_message = error.map(str::to_owned).or_else(|| {
+        current
+            .as_ref()
+            .and_then(|watcher| watcher.error_message.clone())
+    });
+    let _ = app.state::<Database>().update_watcher_state(
+        watcher_id,
+        enabled,
+        status,
+        0,
+        u64::from(success),
+        u64::from(!success),
+        None,
+        error_message.as_deref(),
+        false,
+    );
+    emit_watcher_record(app, watcher_id);
+}
+
+fn emit_watcher_record(app: &AppHandle, watcher_id: &str) {
+    if let Ok(watchers) = app.state::<Database>().list_watchers() {
+        if let Some(record) = watchers
+            .into_iter()
+            .find(|watcher| watcher.id == watcher_id)
+        {
+            let _ = app.emit("watcher-progress", record);
+        }
+    }
 }
 
 async fn wait_for_worker(
@@ -1364,7 +1715,7 @@ fn sanitize_directory_name(value: &str) -> String {
             }
         })
         .collect();
-    let safe = safe.trim_end_matches(|character| character == '.' || character == ' ');
+    let safe = safe.trim_end_matches(['.', ' ']);
     let device_name = safe
         .split('.')
         .next()
@@ -1420,6 +1771,26 @@ fn sanitize_archive_name(requested: Option<&str>, folder_name: Option<&str>) -> 
         safe.push_str(".zip");
     }
     safe
+}
+
+fn mime_type_for_path(path: &Path) -> &'static str {
+    match path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "jpg" | "jpeg" => "image/jpeg",
+        "png" => "image/png",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "mp4" => "video/mp4",
+        "mov" => "video/quicktime",
+        "avi" => "video/x-msvideo",
+        "mkv" => "video/x-matroska",
+        _ => "application/octet-stream",
+    }
 }
 
 #[cfg(test)]
@@ -1496,5 +1867,15 @@ mod tests {
         assert_eq!(sanitize_directory_name(".."), "extracted");
         assert_eq!(sanitize_directory_name("CON"), "extracted");
         assert_eq!(sanitize_directory_name("..."), "extracted");
+    }
+
+    #[test]
+    fn watched_file_mime_types_cover_render_formats() {
+        assert_eq!(mime_type_for_path(Path::new("render.JPG")), "image/jpeg");
+        assert_eq!(mime_type_for_path(Path::new("clip.mov")), "video/quicktime");
+        assert_eq!(
+            mime_type_for_path(Path::new("unknown.bin")),
+            "application/octet-stream"
+        );
     }
 }

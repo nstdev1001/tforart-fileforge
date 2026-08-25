@@ -30,6 +30,8 @@ Implemented:
 - Configurable worker pool with a live SQLite-backed concurrency limit from 1 to 10; queued and paused jobs do not consume execution slots.
 - Startup recovery for queued, running, and paused workflows, including persisted Google resumable-upload sessions and HTTP Range continuation from partial download files.
 - Per-task operational history for queue admission, worker start, stage transitions, retry/backoff events, recovery, completion, warnings, and failures.
+- Native recursive folder watching with configurable 1–10 second stability detection, case-insensitive extension filters, and automatic `.tmp`/`.part` exclusion.
+- Automatic per-file resumable uploads through the shared worker pool, 30-second inactivity stop, queue draining, and persisted public Google Drive folder links.
 
 ## Requirements
 
@@ -50,6 +52,7 @@ npm run tauri:dev
 ./scripts/verify-phase3.ps1
 ./scripts/verify-phase4.ps1
 ./scripts/verify-phase5.ps1
+./scripts/verify-phase6.ps1
 ```
 
 `npm run dev` runs the browser UI only. Native folder picking, disk-space inspection, and SQLite health are available when running `npm run tauri:dev`.
@@ -81,6 +84,7 @@ The Tauri npm commands use `scripts/run-tauri.ps1`, which locates Cargo in the s
 │   ├── capabilities/default.json     # minimum Tauri core permissions
 │   ├── migrations/0001_initial.sql   # Phase 1 SQLite schema
 │   ├── migrations/0003_task_recovery.sql # Phase 5 recovery metadata
+│   ├── migrations/0004_watch_automation.sql # Phase 6 watcher state
 │   ├── src/commands.rs               # folder picker, disk space, DB health
 │   ├── src/database.rs               # connection, pragmas, migrations
 │   ├── src/google/                    # OAuth, keyring, and Drive API client
@@ -134,3 +138,13 @@ The worker limit is configured under Settings → Task engine and takes effect i
 On launch, FileForge reloads `queued`, `running`, and `paused` workflows from SQLite. Upload recovery reuses an existing ZIP and asks Google for the committed offset of the saved resumable session. Download recovery opens the task-owned temporary file at its current length and requests the remaining bytes with HTTP Range. A task that had already entered extraction safely reruns 7-Zip with overwrite confirmation, while a paused task remains paused after restart.
 
 Open History to select any persisted task and inspect its chronological operational log.
+
+## Watch folder automation
+
+1. Open Watchers and choose **Add watcher**.
+2. Select a local render/output folder and enter the destination Google Drive folder ID.
+3. Choose a stability delay from 1 to 10 seconds and enter the allowed extensions, for example `jpg, jpeg, png, mp4, mov`.
+4. FileForge watches the folder recursively. A matching file is queued only after its size and modified timestamp remain unchanged for the full settling delay. `.tmp` and `.part` files are always ignored.
+5. After 30 seconds without a new matching file, the watcher stops accepting events but waits for every queued upload. It then applies public-reader permission to the Drive folder and exposes its copyable `webViewLink`.
+
+Enabled watchers and unfinished child uploads are restored after an application restart. Each detected file is represented by a regular `watch-upload` task, so progress, pause/resume, retry, recovery, and detailed History logs use the same task engine as the other workflows.

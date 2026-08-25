@@ -9,7 +9,7 @@ import type {
   OAuthLoginResult,
 } from "@/types/drive";
 import type { DatabaseHealth, DiskSpace } from "@/types/system";
-import type { Task, TaskLog, WorkerPoolConfig } from "@/types/task";
+import type { FolderWatcher, Task, TaskLog, WorkerPoolConfig } from "@/types/task";
 
 export interface SevenZipStatus {
   available: boolean;
@@ -29,6 +29,14 @@ export interface StartDownloadExtractRequest {
   driveLinkOrId: string;
   destinationPath: string;
   createSubfolder: boolean;
+}
+
+export interface CreateWatcherRequest {
+  name: string;
+  localPath: string;
+  driveFolderId: string;
+  settlingDelayMs: number;
+  includeExtensions: string[];
 }
 
 export async function pickFolder(): Promise<string | null> {
@@ -99,6 +107,26 @@ export async function getWorkerPoolConfig(): Promise<WorkerPoolConfig> {
 
 export async function setWorkerPoolConfig(concurrentTasks: number): Promise<WorkerPoolConfig> {
   return invoke<WorkerPoolConfig>("set_worker_pool_config", { concurrentTasks });
+}
+
+export async function listWatchers(): Promise<FolderWatcher[]> {
+  return invoke<FolderWatcher[]>("list_watchers");
+}
+
+export async function createWatcher(request: CreateWatcherRequest): Promise<FolderWatcher> {
+  return invoke<FolderWatcher>("create_watcher", { request });
+}
+
+export async function stopWatcher(watcherId: string): Promise<void> {
+  return invoke<void>("stop_watcher", { watcherId });
+}
+
+export async function restartWatcher(watcherId: string): Promise<FolderWatcher> {
+  return invoke<FolderWatcher>("restart_watcher", { watcherId });
+}
+
+export async function deleteWatcher(watcherId: string): Promise<void> {
+  return invoke<void>("delete_watcher", { watcherId });
 }
 
 export async function startCompressUpload(

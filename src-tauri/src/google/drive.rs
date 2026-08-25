@@ -222,6 +222,7 @@ pub async fn get_web_view_link(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn download_file(
     http: &reqwest::Client,
     store: &SecureTokenStore,
@@ -398,13 +399,15 @@ fn notify_download_retry(
     });
 }
 
-pub async fn upload_zip_resumable(
+#[allow(clippy::too_many_arguments)]
+pub async fn upload_file_resumable(
     http: &reqwest::Client,
     store: &SecureTokenStore,
     refresh_lock: &Mutex<()>,
     archive_path: &Path,
     upload_name: &str,
     drive_folder_id: &str,
+    mime_type: &str,
     existing_session_uri: Option<&str>,
     pause_gate: Arc<PauseGate>,
     on_event: Arc<dyn Fn(UploadEvent) + Send + Sync>,
@@ -422,6 +425,7 @@ pub async fn upload_zip_resumable(
                     refresh_lock,
                     upload_name,
                     drive_folder_id,
+                    mime_type,
                     total_bytes,
                     pause_gate.clone(),
                     on_event.clone(),
@@ -438,6 +442,7 @@ pub async fn upload_zip_resumable(
             refresh_lock,
             upload_name,
             drive_folder_id,
+            mime_type,
             total_bytes,
             pause_gate.clone(),
             on_event.clone(),
@@ -470,7 +475,7 @@ pub async fn upload_zip_resumable(
                     header::CONTENT_RANGE,
                     format!("bytes {offset}-{end}/{total_bytes}"),
                 )
-                .header(header::CONTENT_TYPE, "application/zip")
+                .header(header::CONTENT_TYPE, mime_type)
                 .bearer_auth(bearer_token)
                 .body(chunk.clone())
                 .send()
@@ -548,6 +553,24 @@ pub async fn make_file_public(
 ) -> Result<(), DriveError> {
     validate_file_id(file_id)?;
     let url = format!("{DRIVE_API_BASE}/files/{file_id}/permissions");
+    let existing: DrivePermissionPage = get_json(
+        http,
+        store,
+        refresh_lock,
+        &url,
+        &[
+            ("supportsAllDrives", "true".to_owned()),
+            ("fields", "permissions(id,type,role)".to_owned()),
+        ],
+    )
+    .await?;
+    if existing
+        .permissions
+        .iter()
+        .any(|permission| permission.kind == "anyone" && permission.role == "reader")
+    {
+        return Ok(());
+    }
     for retry in 0..=MAX_UPLOAD_RETRIES {
         let bearer_token = access_token(http, store, refresh_lock, false).await?;
         let response = http
@@ -572,12 +595,27 @@ pub async fn make_file_public(
     Err(DriveError::MissingUploadResult)
 }
 
+#[derive(Debug, Deserialize)]
+struct DrivePermissionPage {
+    #[serde(default)]
+    permissions: Vec<DrivePermission>,
+}
+
+#[derive(Debug, Deserialize)]
+struct DrivePermission {
+    #[serde(rename = "type")]
+    kind: String,
+    role: String,
+}
+
+#[allow(clippy::too_many_arguments)]
 async fn initiate_resumable_upload(
     http: &reqwest::Client,
     store: &SecureTokenStore,
     refresh_lock: &Mutex<()>,
     upload_name: &str,
     drive_folder_id: &str,
+    mime_type: &str,
     total_bytes: u64,
     pause_gate: Arc<PauseGate>,
     on_event: Arc<dyn Fn(UploadEvent) + Send + Sync>,
@@ -592,12 +630,12 @@ async fn initiate_resumable_upload(
                 ("supportsAllDrives", "true"),
                 ("fields", FILE_FIELDS),
             ])
-            .header("X-Upload-Content-Type", "application/zip")
+            .header("X-Upload-Content-Type", mime_type)
             .header("X-Upload-Content-Length", total_bytes)
             .bearer_auth(bearer_token)
             .json(&serde_json::json!({
                 "name": upload_name,
-                "mimeType": "application/zip",
+                "mimeType": mime_type,
                 "parents": [drive_folder_id]
             }))
             .send()
@@ -819,5 +857,17 @@ mod tests {
     #[test]
     fn chunk_size_is_a_google_256_kib_multiple() {
         assert_eq!(UPLOAD_CHUNK_SIZE % (256 * 1024), 0);
+    }
+
+    #[test]
+    fn public_reader_permission_is_detected_idempotently() {
+        let page: DrivePermissionPage = serde_json::from_str(
+            r#"{"permissions":[{"id":"one","type":"user","role":"writer"},{"id":"two","type":"anyone","role":"reader"}]}"#,
+        )
+        .expect("permission response");
+        assert!(page
+            .permissions
+            .iter()
+            .any(|permission| permission.kind == "anyone" && permission.role == "reader"));
     }
 }
