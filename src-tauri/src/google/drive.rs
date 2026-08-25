@@ -14,6 +14,7 @@ use super::{
     oauth::{valid_access_token, OAuthError},
     secure_store::SecureTokenStore,
 };
+use crate::bandwidth::BandwidthManager;
 use crate::task_engine::PauseGate;
 
 const DRIVE_API_BASE: &str = "https://www.googleapis.com/drive/v3";
@@ -21,6 +22,7 @@ const FILE_FIELDS: &str =
     "id,name,mimeType,size,modifiedTime,createdTime,parents,webViewLink,shared,trashed,capabilities(canDownload)";
 const UPLOAD_API_URL: &str = "https://www.googleapis.com/upload/drive/v3/files";
 const UPLOAD_CHUNK_SIZE: usize = 8 * 1024 * 1024;
+const LIMITED_UPLOAD_CHUNK_SIZE: usize = 256 * 1024;
 const MAX_UPLOAD_RETRIES: u32 = 5;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -233,6 +235,7 @@ pub async fn download_file(
     resume_existing: bool,
     pause_gate: Arc<PauseGate>,
     on_event: Arc<dyn Fn(DownloadEvent) + Send + Sync>,
+    bandwidth: BandwidthManager,
 ) -> Result<(), DriveError> {
     validate_file_id(file_id)?;
     let url = format!("{DRIVE_API_BASE}/files/{file_id}");
@@ -326,6 +329,7 @@ pub async fn download_file(
             pause_gate.wait().await;
             match response.chunk().await {
                 Ok(Some(chunk)) => {
+                    bandwidth.throttle_download(chunk.len()).await;
                     output.write_all(&chunk).await?;
                     offset = offset.saturating_add(chunk.len() as u64);
                     emit_download_progress(&on_event, offset, total_bytes, started_at);
@@ -411,6 +415,7 @@ pub async fn upload_file_resumable(
     existing_session_uri: Option<&str>,
     pause_gate: Arc<PauseGate>,
     on_event: Arc<dyn Fn(UploadEvent) + Send + Sync>,
+    bandwidth: BandwidthManager,
 ) -> Result<DriveFile, DriveError> {
     validate_file_id(drive_folder_id)?;
     let total_bytes = tokio::fs::metadata(archive_path).await?.len();
@@ -458,7 +463,12 @@ pub async fn upload_file_resumable(
 
     while offset < total_bytes {
         pause_gate.wait().await;
-        let length = std::cmp::min(UPLOAD_CHUNK_SIZE as u64, total_bytes - offset) as usize;
+        let chunk_size = if bandwidth.is_maximum() {
+            UPLOAD_CHUNK_SIZE
+        } else {
+            LIMITED_UPLOAD_CHUNK_SIZE
+        };
+        let length = std::cmp::min(chunk_size as u64, total_bytes - offset) as usize;
         let mut chunk = vec![0_u8; length];
         file.seek(std::io::SeekFrom::Start(offset)).await?;
         file.read_exact(&mut chunk).await?;
@@ -467,6 +477,7 @@ pub async fn upload_file_resumable(
 
         loop {
             pause_gate.wait().await;
+            bandwidth.throttle_upload(length).await;
             let bearer_token = access_token(http, store, refresh_lock, false).await?;
             let response = http
                 .put(&session_uri)
@@ -857,6 +868,7 @@ mod tests {
     #[test]
     fn chunk_size_is_a_google_256_kib_multiple() {
         assert_eq!(UPLOAD_CHUNK_SIZE % (256 * 1024), 0);
+        assert_eq!(LIMITED_UPLOAD_CHUNK_SIZE % (256 * 1024), 0);
     }
 
     #[test]

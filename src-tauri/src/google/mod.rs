@@ -17,10 +17,11 @@ pub struct GoogleService {
     http: reqwest::Client,
     token_store: SecureTokenStore,
     refresh_lock: Mutex<()>,
+    bandwidth: crate::bandwidth::BandwidthManager,
 }
 
 impl GoogleService {
-    pub fn new() -> Self {
+    pub fn new(bandwidth: crate::bandwidth::BandwidthManager) -> Self {
         let http = reqwest::Client::builder()
             .user_agent(concat!("FileForge/", env!("CARGO_PKG_VERSION")))
             .connect_timeout(Duration::from_secs(15))
@@ -32,6 +33,7 @@ impl GoogleService {
             http,
             token_store: SecureTokenStore,
             refresh_lock: Mutex::new(()),
+            bandwidth,
         }
     }
 
@@ -55,6 +57,7 @@ impl GoogleService {
             existing_session_uri,
             pause_gate,
             on_event,
+            self.bandwidth.clone(),
         )
         .await
         .map_err(|error| error.to_string())
@@ -82,6 +85,7 @@ impl GoogleService {
             existing_session_uri,
             pause_gate,
             on_event,
+            self.bandwidth.clone(),
         )
         .await
         .map_err(|error| error.to_string())
@@ -118,6 +122,7 @@ impl GoogleService {
             resume_existing,
             pause_gate,
             on_event,
+            self.bandwidth.clone(),
         )
         .await
         .map_err(|error| error.to_string())

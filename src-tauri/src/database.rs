@@ -11,7 +11,7 @@ use tauri::{AppHandle, Manager, Runtime};
 use thiserror::Error;
 
 const DATABASE_FILE: &str = "fileforge.db";
-const LATEST_SCHEMA_VERSION: i64 = 5;
+const LATEST_SCHEMA_VERSION: i64 = 6;
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -584,6 +584,14 @@ fn apply_migrations(connection: &mut Connection) -> Result<(), rusqlite::Error> 
         transaction.commit()?;
     }
 
+    let current_version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if current_version < 6 {
+        let transaction = connection.transaction()?;
+        transaction.execute_batch(include_str!("../migrations/0006_bandwidth_mode.sql"))?;
+        transaction.pragma_update(None, "user_version", 6)?;
+        transaction.commit()?;
+    }
+
     let final_version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
     if final_version != LATEST_SCHEMA_VERSION {
         return Err(rusqlite::Error::InvalidQuery);
@@ -708,6 +716,15 @@ mod tests {
             )
             .expect("desktop notification setting");
         assert_eq!(notifications, "true");
+
+        let maximum_bandwidth: String = connection
+            .query_row(
+                "SELECT value FROM settings WHERE key = 'maximum_bandwidth'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("bandwidth mode setting");
+        assert_eq!(maximum_bandwidth, "false");
     }
 
     #[test]

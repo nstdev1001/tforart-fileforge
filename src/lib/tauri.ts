@@ -45,6 +45,12 @@ export interface DesktopPreferences {
   notificationsEnabled: boolean;
 }
 
+export interface BandwidthPreferences {
+  maximumBandwidth: boolean;
+  defaultUploadMbps: number;
+  defaultDownloadMbps: number;
+}
+
 export async function pickFolder(): Promise<string | null> {
   return invoke<string | null>("pick_folder");
 }
@@ -147,6 +153,16 @@ export async function setDesktopPreferences(
 
 export async function sendTestNotification(): Promise<void> {
   return invoke<void>("send_test_notification");
+}
+
+export async function getBandwidthPreferences(): Promise<BandwidthPreferences> {
+  return invoke<BandwidthPreferences>("get_bandwidth_preferences");
+}
+
+export async function setBandwidthPreferences(
+  maximumBandwidth: boolean,
+): Promise<BandwidthPreferences> {
+  return invoke<BandwidthPreferences>("set_bandwidth_preferences", { maximumBandwidth });
 }
 
 export async function startCompressUpload(

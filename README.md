@@ -35,6 +35,7 @@ Implemented:
 - Native system tray controls for opening FileForge, pausing/resuming every task, and explicitly quitting the background process.
 - Configurable close-to-tray behavior, hidden `--background` startup, and Windows auto-start integration.
 - Native desktop notifications for successful and failed tasks, completed/error watchers, plus a Settings test action.
+- Shared upload/download bandwidth modes: regulated defaults of 10/25 Mbps or unrestricted maximum throughput.
 
 ## Requirements
 
@@ -57,6 +58,7 @@ npm run tauri:dev
 ./scripts/verify-phase5.ps1
 ./scripts/verify-phase6.ps1
 ./scripts/verify-phase7.ps1
+./scripts/verify-phase8.ps1
 ```
 
 `npm run dev` runs the browser UI only. Native folder picking, disk-space inspection, and SQLite health are available when running `npm run tauri:dev`.
@@ -90,6 +92,8 @@ The Tauri npm commands use `scripts/run-tauri.ps1`, which locates Cargo in the s
 │   ├── migrations/0003_task_recovery.sql # Phase 5 recovery metadata
 │   ├── migrations/0004_watch_automation.sql # Phase 6 watcher state
 │   ├── migrations/0005_desktop_experience.sql # Phase 7 desktop preferences
+│   ├── migrations/0006_bandwidth_mode.sql # bandwidth mode preference
+│   ├── src/bandwidth.rs              # shared upload/download rate limiter
 │   ├── src/commands.rs               # folder picker, disk space, DB health
 │   ├── src/database.rs               # connection, pragmas, migrations
 │   ├── src/desktop.rs                # tray, auto-start, background mode, notifications
@@ -162,3 +166,9 @@ The tray menu exposes **Open FileForge**, **Pause All**, **Resume All**, and **Q
 Settings → Desktop experience controls Windows auto-start, close-to-tray, and native task notifications. Auto-start launches FileForge with `--background`; the main window remains hidden while the tray and recovery workers stay active. When close-to-tray is disabled, closing the main window exits the process.
 
 Use **Send test** in Settings to validate notifications. On Windows, test the final notification identity and icon from an installed FileForge bundle; notifications emitted by a development executable can appear under the PowerShell development identity.
+
+## Bandwidth mode
+
+Settings → Task engine includes a **Maximum bandwidth** toggle. It is off by default: every active worker shares a combined 10 Mbps upload limit and a combined 25 Mbps download limit. Turning it on removes FileForge's rate limit and restores 8 MiB resumable-upload chunks so transfers can use all bandwidth available from the network and Google Drive.
+
+The selected mode is persisted in SQLite and takes effect without restarting FileForge. Default-mode uploads use Google-compatible 256 KiB chunks; download response chunks are paced before being written to disk so concurrent transfers respect the shared directional limit.

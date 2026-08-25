@@ -1,3 +1,4 @@
+mod bandwidth;
 mod commands;
 mod database;
 mod desktop;
@@ -30,8 +31,12 @@ pub fn run() {
                 .get_setting("concurrent_uploads")?
                 .and_then(|value| value.parse::<usize>().ok())
                 .unwrap_or(3);
+            let maximum_bandwidth =
+                bandwidth::parse_setting(database.get_setting("maximum_bandwidth")?);
+            let bandwidth = bandwidth::BandwidthManager::new(maximum_bandwidth);
             app.manage(database);
-            app.manage(GoogleService::new());
+            app.manage(GoogleService::new(bandwidth.clone()));
+            app.manage(bandwidth);
             app.manage(TaskEngine::new(concurrent_tasks));
             app.manage(WatcherService::new());
             app.manage(desktop::DesktopState::new());
@@ -72,6 +77,8 @@ pub fn run() {
             desktop::get_desktop_preferences,
             desktop::set_desktop_preferences,
             desktop::send_test_notification,
+            bandwidth::get_bandwidth_preferences,
+            bandwidth::set_bandwidth_preferences,
         ])
         .on_window_event(desktop::handle_window_event)
         .run(tauri::generate_context!())

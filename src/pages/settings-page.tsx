@@ -1,5 +1,5 @@
 import { zodResolver } from "@hookform/resolvers/zod";
-import { Bell, Check, FolderCog, PanelTopClose, Palette, Power, Save, Send, SlidersHorizontal } from "lucide-react";
+import { Bell, Check, FolderCog, Gauge, PanelTopClose, Palette, Power, Save, Send, SlidersHorizontal } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
 import { z } from "zod";
@@ -11,9 +11,11 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input";
 import {
   getDesktopPreferences,
+  getBandwidthPreferences,
   getWorkerPoolConfig,
   sendTestNotification,
   setDesktopPreferences,
+  setBandwidthPreferences,
   setWorkerPoolConfig,
 } from "@/lib/tauri";
 import { cn } from "@/lib/utils";
@@ -25,6 +27,7 @@ const settingsSchema = z.object({
   autoStart: z.boolean(),
   closeToTray: z.boolean(),
   notificationsEnabled: z.boolean(),
+  maximumBandwidth: z.boolean(),
 });
 
 type SettingsForm = z.infer<typeof settingsSchema>;
@@ -40,7 +43,8 @@ export function SettingsPage() {
   const setTheme = useAppStore((state) => state.setTheme);
   const [saved, setSaved] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
-  const { register, handleSubmit, setValue, formState: { errors, isSubmitting } } = useForm<SettingsForm>({
+  const [defaultBandwidth, setDefaultBandwidth] = useState({ upload: 10, download: 25 });
+  const { register, handleSubmit, setValue, watch, formState: { errors, isSubmitting } } = useForm<SettingsForm>({
     resolver: zodResolver(settingsSchema),
     defaultValues: {
       concurrentUploads: 3,
@@ -48,6 +52,7 @@ export function SettingsPage() {
       autoStart: false,
       closeToTray: true,
       notificationsEnabled: true,
+      maximumBandwidth: false,
     },
   });
 
@@ -66,7 +71,20 @@ export function SettingsPage() {
       .catch(() => {
         // Browser preview has no desktop integration plugins.
       });
+    getBandwidthPreferences()
+      .then((preferences) => {
+        setValue("maximumBandwidth", preferences.maximumBandwidth);
+        setDefaultBandwidth({
+          upload: preferences.defaultUploadMbps,
+          download: preferences.defaultDownloadMbps,
+        });
+      })
+      .catch(() => {
+        // Browser preview has no native bandwidth manager.
+      });
   }, [setValue]);
+
+  const maximumBandwidth = watch("maximumBandwidth");
 
   async function saveSettings(values: SettingsForm) {
     setSaveError(null);
@@ -77,6 +95,7 @@ export function SettingsPage() {
         closeToTray: values.closeToTray,
         notificationsEnabled: values.notificationsEnabled,
       });
+      await setBandwidthPreferences(values.maximumBandwidth);
       setSaved(true);
       window.setTimeout(() => setSaved(false), 1800);
     } catch (error) {
@@ -119,6 +138,35 @@ export function SettingsPage() {
             <span className="flex items-center gap-1.5"><FolderCog className="size-3.5" /> Temporary directory</span>
             <Input placeholder="Use system default" {...register("temporaryDirectory")} />
           </label>
+          <div className="flex items-center gap-4 rounded-xl border border-border/70 p-4 sm:col-span-2">
+            <Gauge className="size-5 shrink-0 text-primary" />
+            <div className="min-w-0 flex-1">
+              <p className="text-xs font-semibold">Maximum bandwidth</p>
+              <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
+                {maximumBandwidth
+                  ? "No FileForge speed limit. Uploads and downloads can use all available bandwidth."
+                  : `Default mode shares ${defaultBandwidth.upload} Mbps upload and ${defaultBandwidth.download} Mbps download across active tasks.`}
+              </p>
+            </div>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={maximumBandwidth}
+              aria-label="Use maximum bandwidth"
+              onClick={() => setValue("maximumBandwidth", !maximumBandwidth, { shouldDirty: true })}
+              className={cn(
+                "relative h-6 w-11 shrink-0 rounded-full border transition-colors",
+                maximumBandwidth ? "border-primary bg-primary" : "border-border bg-muted",
+              )}
+            >
+              <span
+                className={cn(
+                  "absolute left-0.5 top-0.5 size-4.5 rounded-full bg-white shadow-sm transition-transform",
+                  maximumBandwidth ? "translate-x-5" : "translate-x-0",
+                )}
+              />
+            </button>
+          </div>
         </CardContent>
       </Card>
 
