@@ -1,22 +1,27 @@
 import { Layers3 } from "lucide-react";
 
-import { cn } from "@/lib/utils";
+import fileForgeLogo from "@/assets/tforart-fileforge-logo.svg";
 
 export function BrandMark({ compact = false }: { compact?: boolean }) {
-  return (
-    <div className="flex items-center gap-3">
-      <div className="grid size-9 shrink-0 place-items-center rounded-xl bg-primary text-primary-foreground shadow-sm">
-        <Layers3 className="size-5" strokeWidth={2.2} />
+  if (compact) {
+    return (
+      <div
+        aria-label="FileForge"
+        className="grid size-9 shrink-0 place-items-center rounded-xl bg-primary text-primary-foreground shadow-sm"
+        role="img"
+      >
+        <Layers3 aria-hidden="true" className="size-5" strokeWidth={2.2} />
       </div>
-      {!compact && (
-        <div className="leading-none">
-          <div className="text-[15px] font-bold tracking-tight">FileForge</div>
-          <div className="mt-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
-            Automation desk
-          </div>
-        </div>
-      )}
+    );
+  }
+
+  return (
+    <div className="flex h-9 items-center">
+      <img
+        alt="FileForge"
+        className="block w-full max-w-46 dark:invert"
+        src={fileForgeLogo}
+      />
     </div>
   );
 }
-
