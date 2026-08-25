@@ -31,7 +31,7 @@ Implemented:
 - Startup recovery for queued, running, and paused workflows, including persisted Google resumable-upload sessions and HTTP Range continuation from partial download files.
 - Per-task operational history for queue admission, worker start, stage transitions, retry/backoff events, recovery, completion, warnings, and failures.
 - Native recursive folder watching with configurable 1–10 second stability detection, case-insensitive extension filters, and automatic `.tmp`/`.part` exclusion.
-- Automatic per-file resumable uploads through the shared worker pool, 30-second inactivity stop, queue draining, and persisted public Google Drive folder links.
+- Automatic resumable watcher uploads through the shared worker pool, one aggregate watcher task with live file counts, a 30-second inactivity stop, queue draining, and persisted Google Drive folder links.
 - Native system tray controls for opening FileForge, pausing/resuming every task, and explicitly quitting the background process.
 - Configurable close-to-tray behavior, hidden `--background` startup, and Windows auto-start integration.
 - Native desktop notifications for successful and failed tasks, completed/error watchers, plus a Settings test action.
@@ -93,6 +93,7 @@ The Tauri npm commands use `scripts/run-tauri.ps1`, which locates Cargo in the s
 │   ├── migrations/0004_watch_automation.sql # Phase 6 watcher state
 │   ├── migrations/0005_desktop_experience.sql # Phase 7 desktop preferences
 │   ├── migrations/0006_bandwidth_mode.sql # bandwidth mode preference
+│   ├── migrations/0007_watcher_drive_folder_name.sql # watcher Drive folder labels
 │   ├── src/bandwidth.rs              # shared upload/download rate limiter
 │   ├── src/commands.rs               # folder picker, disk space, DB health
 │   ├── src/database.rs               # connection, pragmas, migrations
@@ -152,12 +153,12 @@ Open History to select any persisted task and inspect its chronological operatio
 ## Watch folder automation
 
 1. Open Watchers and choose **Add watcher**.
-2. Select a local render/output folder and enter the destination Google Drive folder ID.
+2. Select a local render/output folder and choose the destination Google Drive folder.
 3. Choose a stability delay from 1 to 10 seconds and enter the allowed extensions, for example `jpg, jpeg, png, mp4, mov`.
 4. FileForge watches the folder recursively. A matching file is queued only after its size and modified timestamp remain unchanged for the full settling delay. `.tmp` and `.part` files are always ignored.
-5. After 30 seconds without a new matching file, the watcher stops accepting events but waits for every queued upload. It then applies public-reader permission to the Drive folder and exposes its copyable `webViewLink`.
+5. The destination folder link is copyable as soon as monitoring starts. After 30 seconds without a new matching file, the watcher stops accepting events, waits for every queued upload, and then applies public-reader permission to the Drive folder.
 
-Enabled watchers and unfinished child uploads are restored after an application restart. Each detected file is represented by a regular `watch-upload` task, so progress, pause/resume, retry, recovery, and detailed History logs use the same task engine as the other workflows.
+Enabled watchers and unfinished uploads are restored after an application restart. Per-file upload jobs remain internal so resumable recovery and the shared worker pool still work, while Tasks, Dashboard, and History expose one aggregate record per watcher with detected and uploaded file counts.
 
 ## Desktop background experience
 

@@ -80,8 +80,8 @@ export function DashboardPage() {
         ))}
       </section>
 
-      <section className="grid gap-5 lg:grid-cols-[1.6fr_1fr]">
-        <Card className="overflow-hidden">
+      <section className="grid min-w-0 gap-5 lg:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)]">
+        <Card className="min-w-0 overflow-hidden">
           <CardHeader className="flex-row items-center justify-between gap-3 border-b border-border/70">
             <div>
               <CardTitle>Recent tasks</CardTitle>
@@ -91,9 +91,9 @@ export function DashboardPage() {
               View all <ArrowRight className="size-3.5" />
             </Button>
           </CardHeader>
-          <CardContent className="p-4">
+          <CardContent className="min-w-0 p-4">
             {tasks.length ? (
-              <div className="grid gap-3">{tasks.slice(0, 3).map((task) => <TaskCard key={task.id} task={task} />)}</div>
+              <div className="grid min-w-0 gap-3">{tasks.slice(0, 3).map((task) => <TaskCard key={task.id} task={task} />)}</div>
             ) : (
               <div className="grid min-h-56 place-items-center rounded-2xl border border-dashed border-border bg-muted/30 px-6 text-center">
                 <div>
@@ -113,7 +113,7 @@ export function DashboardPage() {
           </CardContent>
         </Card>
 
-        <div className="space-y-5">
+        <div className="min-w-0 space-y-5">
           <Card>
             <CardHeader>
               <CardTitle className="text-sm">Quick actions</CardTitle>
@@ -154,4 +154,3 @@ export function DashboardPage() {
     </div>
   );
 }
-

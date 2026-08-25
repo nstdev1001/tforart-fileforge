@@ -3,7 +3,9 @@ import { useEffect, useMemo, useState } from "react";
 
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Progress } from "@/components/ui/progress";
 import { listTaskLogs } from "@/lib/tauri";
+import { isWatcherAggregateTask } from "@/lib/task-utils";
 import { cn, formatRelativeTime } from "@/lib/utils";
 import { useAppStore } from "@/store/app-store";
 import { taskStageLabel, taskStatusLabel, type TaskLog } from "@/types/task";
@@ -25,16 +27,29 @@ export function HistoryPage() {
     () => tasks.find((task) => task.id === selectedId) ?? null,
     [selectedId, tasks],
   );
+  const selectedWatcher = selectedTask && isWatcherAggregateTask(selectedTask)
+    ? selectedTask
+    : null;
 
   useEffect(() => {
-    if (!selectedId && tasks.length) setSelectedId(tasks[0].id);
+    if (!tasks.length) {
+      if (selectedId) setSelectedId(null);
+      return;
+    }
+    if (!selectedId || !tasks.some((task) => task.id === selectedId)) {
+      setSelectedId(tasks[0].id);
+    }
   }, [selectedId, tasks]);
 
   useEffect(() => {
-    if (!selectedId) return;
+    if (!selectedTask || isWatcherAggregateTask(selectedTask)) {
+      setLogs([]);
+      setLoading(false);
+      return;
+    }
     let disposed = false;
     setLoading(true);
-    listTaskLogs(selectedId)
+    listTaskLogs(selectedTask.id)
       .then((records) => {
         if (!disposed) setLogs(records);
       })
@@ -47,7 +62,7 @@ export function HistoryPage() {
     return () => {
       disposed = true;
     };
-  }, [selectedId, selectedTask?.stage, selectedTask?.status]);
+  }, [selectedTask?.id, selectedTask?.kind, selectedTask?.stage, selectedTask?.status]);
 
   if (!tasks.length) {
     return (
@@ -98,7 +113,37 @@ export function HistoryPage() {
           {selectedTask ? <Badge variant={selectedTask.status === "completed" ? "success" : selectedTask.status === "failed" ? "danger" : "info"}>{taskStatusLabel[selectedTask.status]}</Badge> : null}
         </CardHeader>
         <CardContent className="p-5">
-          {loading ? (
+          {selectedWatcher ? (
+            <div className="space-y-5">
+              <div className="grid grid-cols-2 gap-3 text-center">
+                <div className="rounded-xl bg-muted/60 p-4">
+                  <p className="text-2xl font-semibold">{selectedWatcher.filesDetected ?? 0}</p>
+                  <p className="mt-1 text-[11px] text-muted-foreground">Detected</p>
+                </div>
+                <div className="rounded-xl bg-emerald-500/10 p-4">
+                  <p className="text-2xl font-semibold text-emerald-700 dark:text-emerald-300">{selectedWatcher.filesUploaded ?? 0}</p>
+                  <p className="mt-1 text-[11px] text-muted-foreground">Uploaded</p>
+                </div>
+              </div>
+              <div>
+                <div className="mb-2 flex items-center justify-between text-xs text-muted-foreground">
+                  <span>Watcher progress</span>
+                  <span className="font-semibold text-foreground">{Math.round(selectedWatcher.status === "completed" ? 100 : selectedWatcher.progress)}%</span>
+                </div>
+                <Progress
+                  value={selectedWatcher.status === "completed" ? 100 : selectedWatcher.progress}
+                  label="Watcher progress"
+                  indicatorClassName={selectedWatcher.status === "failed" ? "bg-red-500" : "bg-emerald-500"}
+                />
+              </div>
+              {selectedWatcher.errorMessage ? (
+                <p className="rounded-xl bg-red-500/10 px-4 py-3 text-xs text-red-600 dark:text-red-300">{selectedWatcher.errorMessage}</p>
+              ) : null}
+              <p className="text-xs leading-relaxed text-muted-foreground">
+                Individual watched-file tasks and logs are hidden; this record summarizes the folder watcher.
+              </p>
+            </div>
+          ) : loading ? (
             <div className="grid min-h-52 place-items-center text-muted-foreground"><LoaderCircle className="size-5 animate-spin" /></div>
           ) : logs.length ? (
             <ol className="relative ml-2 border-l border-border/80">

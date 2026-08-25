@@ -2,14 +2,20 @@ export const TASK_STATUSES = [
   "queued",
   "running",
   "paused",
+  "stopped",
   "failed",
   "completed",
 ] as const;
 
 export type TaskStatus = (typeof TASK_STATUSES)[number];
-export type TaskKind = "compress-upload" | "download-extract" | "watch-upload";
+export type TaskKind =
+  | "compress-upload"
+  | "download-extract"
+  | "watch-upload"
+  | "watcher";
 export type TaskStage =
   | "queued"
+  | "watching"
   | "compressing"
   | "uploading"
   | "sharing"
@@ -17,6 +23,7 @@ export type TaskStage =
   | "inspecting"
   | "extracting"
   | "opening"
+  | "stopped"
   | "completed"
   | "failed";
 
@@ -36,7 +43,12 @@ export interface Task {
   retryCount: number;
   errorMessage?: string;
   driveFileId?: string;
+  driveFolderName?: string;
   driveWebViewLink?: string;
+  filesDetected?: number;
+  filesUploading?: number;
+  filesUploaded?: number;
+  filesFailed?: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -63,6 +75,7 @@ export interface FolderWatcher {
   name: string;
   localPath: string;
   driveFolderId?: string;
+  driveFolderName?: string;
   enabled: boolean;
   status: WatcherStatus;
   settlingDelayMs: number;
@@ -72,6 +85,7 @@ export interface FolderWatcher {
   lastActivityAt?: string;
   driveWebViewLink?: string;
   filesDetected: number;
+  filesUploading: number;
   filesUploaded: number;
   filesFailed: number;
   errorMessage?: string;
@@ -83,12 +97,14 @@ export const taskStatusLabel: Record<TaskStatus, string> = {
   queued: "Queued",
   running: "Running",
   paused: "Paused",
+  stopped: "Stopped",
   failed: "Failed",
   completed: "Completed",
 };
 
 export const taskStageLabel: Record<TaskStage, string> = {
   queued: "Waiting",
+  watching: "Watching",
   compressing: "Compressing",
   uploading: "Uploading",
   sharing: "Creating share link",
@@ -96,6 +112,7 @@ export const taskStageLabel: Record<TaskStage, string> = {
   inspecting: "Validating ZIP",
   extracting: "Extracting",
   opening: "Opening folder",
+  stopped: "Stopped",
   completed: "Complete",
   failed: "Failed",
 };

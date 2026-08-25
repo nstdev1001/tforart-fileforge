@@ -5,7 +5,7 @@ use std::{
         atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc, Mutex as StdMutex,
     },
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use serde::{Deserialize, Serialize};
@@ -194,7 +194,9 @@ struct WatchUploadOptions {
 
 #[tauri::command]
 pub fn list_tasks(database: State<'_, Database>) -> Result<Vec<TaskRecord>, String> {
-    database.list_tasks().map_err(|error| error.to_string())
+    database
+        .list_public_tasks()
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -508,7 +510,7 @@ pub async fn enqueue_watch_upload(
     let task_id = Uuid::new_v4().to_string();
     let task_name = format!("Auto-upload {upload_name}");
     let database = app.state::<Database>();
-    database
+    let record = database
         .create_watch_upload_task(
             &task_id,
             &watcher_id,
@@ -519,20 +521,6 @@ pub async fn enqueue_watch_upload(
             &options_json,
         )
         .map_err(|error| error.to_string())?;
-    database
-        .append_log(
-            &task_id,
-            "info",
-            "watch.file_stable",
-            "File remained unchanged for the configured settling delay",
-        )
-        .map_err(|error| error.to_string())?;
-    let record = database
-        .list_tasks()
-        .map_err(|error| error.to_string())?
-        .into_iter()
-        .find(|task| task.id == task_id)
-        .ok_or_else(|| "watch upload task could not be loaded".to_owned())?;
     let control = Arc::new(TaskControl {
         gate: Arc::new(
             if app
@@ -560,6 +548,7 @@ pub async fn enqueue_watch_upload(
             .insert(task_id.clone(), control.clone());
         engine.pool.clone()
     };
+    emit_watcher_record(&app, &watcher_id);
     tauri::async_runtime::spawn(run_watch_upload_workflow(
         app,
         task_id,
@@ -591,12 +580,16 @@ pub async fn pause_task(
         .get(&task_id)
         .cloned()
         .ok_or_else(|| "task is not currently active".to_owned())?;
-    control.gate.pause();
     {
         let mut runtime = control.runtime.lock().map_err(|_| "task lock poisoned")?;
+        if !matches!(runtime.record.status.as_str(), "queued" | "running") {
+            return Err("task is not currently running".to_owned());
+        }
         runtime.record.status = "paused".to_owned();
     }
+    control.gate.pause();
     publish(&app, &control.runtime)?;
+    emit_watcher_for_task(&app, &task_id);
     database
         .append_log(&task_id, "info", "task.paused", "Task paused by user")
         .map_err(|error| error.to_string())?;
@@ -622,6 +615,9 @@ pub async fn resume_task(
         .ok_or_else(|| "task is not currently active".to_owned())?;
     {
         let mut runtime = control.runtime.lock().map_err(|_| "task lock poisoned")?;
+        if runtime.record.status != "paused" {
+            return Err("task is not paused".to_owned());
+        }
         runtime.record.status = if runtime.record.stage == "queued" {
             "queued".to_owned()
         } else {
@@ -630,6 +626,7 @@ pub async fn resume_task(
     }
     control.gate.resume();
     publish(&app, &control.runtime)?;
+    emit_watcher_for_task(&app, &task_id);
     database
         .append_log(&task_id, "info", "task.resumed", "Task resumed by user")
         .map_err(|error| error.to_string())?;
@@ -653,24 +650,30 @@ pub async fn pause_all(app: &AppHandle) -> usize {
         if control.gate.is_paused() {
             continue;
         }
-        control.gate.pause();
         let task_id = if let Ok(mut runtime) = control.runtime.lock() {
-            runtime.record.status = "paused".to_owned();
-            Some(runtime.record.id.clone())
+            if matches!(runtime.record.status.as_str(), "queued" | "running") {
+                runtime.record.status = "paused".to_owned();
+                Some(runtime.record.id.clone())
+            } else {
+                None
+            }
         } else {
             None
         };
+        let Some(task_id) = task_id else {
+            continue;
+        };
+        control.gate.pause();
         if publish(app, &control.runtime).is_ok() {
             changed += 1;
         }
-        if let Some(task_id) = task_id {
-            let _ = app.state::<Database>().append_log(
-                &task_id,
-                "info",
-                "task.paused_all",
-                "Task paused from the system tray",
-            );
-        }
+        emit_watcher_for_task(app, &task_id);
+        let _ = app.state::<Database>().append_log(
+            &task_id,
+            "info",
+            "task.paused_all",
+            "Task paused from the system tray",
+        );
     }
     changed
 }
@@ -693,27 +696,33 @@ pub async fn resume_all(app: &AppHandle) -> usize {
             continue;
         }
         let task_id = if let Ok(mut runtime) = control.runtime.lock() {
-            runtime.record.status = if runtime.record.stage == "queued" {
-                "queued".to_owned()
+            if runtime.record.status == "paused" {
+                runtime.record.status = if runtime.record.stage == "queued" {
+                    "queued".to_owned()
+                } else {
+                    "running".to_owned()
+                };
+                Some(runtime.record.id.clone())
             } else {
-                "running".to_owned()
-            };
-            Some(runtime.record.id.clone())
+                None
+            }
         } else {
             None
+        };
+        let Some(task_id) = task_id else {
+            continue;
         };
         control.gate.resume();
         if publish(app, &control.runtime).is_ok() {
             changed += 1;
         }
-        if let Some(task_id) = task_id {
-            let _ = app.state::<Database>().append_log(
-                &task_id,
-                "info",
-                "task.resumed_all",
-                "Task resumed from the system tray",
-            );
-        }
+        emit_watcher_for_task(app, &task_id);
+        let _ = app.state::<Database>().append_log(
+            &task_id,
+            "info",
+            "task.resumed_all",
+            "Task resumed from the system tray",
+        );
     }
     changed
 }
@@ -731,6 +740,7 @@ pub async fn recover_unfinished_tasks(app: AppHandle) {
         let task_id = task.record.id.clone();
         let task_name = task.record.name.clone();
         let watcher_id = task.watcher_id.clone();
+        let is_watch_upload = task.task_type == "watch_upload";
         if let Err(error) = recover_task(&app, task).await {
             let _ = app
                 .state::<TaskEngine>()
@@ -738,21 +748,31 @@ pub async fn recover_unfinished_tasks(app: AppHandle) {
                 .write()
                 .await
                 .remove(&task_id);
-            let _ = app
-                .state::<Database>()
-                .mark_recovery_failed(&task_id, &error);
-            let _ =
-                app.state::<Database>()
-                    .append_log(&task_id, "error", "recovery.failed", &error);
-            if let Ok(tasks) = app.state::<Database>().list_tasks() {
-                if let Some(record) = tasks.into_iter().find(|record| record.id == task_id) {
-                    let _ = app.emit("task-progress", record);
+            if is_watch_upload {
+                finish_watcher_file(
+                    &app,
+                    &task_id,
+                    watcher_id.as_deref().unwrap_or_default(),
+                    false,
+                    Some(&error),
+                );
+            } else {
+                let _ = app
+                    .state::<Database>()
+                    .mark_recovery_failed(&task_id, &error);
+                let _ = app.state::<Database>().append_log(
+                    &task_id,
+                    "error",
+                    "recovery.failed",
+                    &error,
+                );
+                if let Ok(tasks) = app.state::<Database>().list_tasks() {
+                    if let Some(record) = tasks.into_iter().find(|record| record.id == task_id) {
+                        let _ = app.emit("task-progress", record);
+                    }
                 }
+                desktop::notify_task_result(&app, &task_name, false, Some(&error));
             }
-            if let Some(watcher_id) = watcher_id {
-                finish_watcher_file(&app, &watcher_id, false, Some(&error));
-            }
-            desktop::notify_task_result(&app, &task_name, false, Some(&error));
             eprintln!("FileForge could not recover task {task_id}: {error}");
         }
     }
@@ -800,6 +820,7 @@ async fn recover_task(app: &AppHandle, task: RecoverableTask) -> Result<(), Stri
         engine.pool.clone()
     };
     publish(app, &control.runtime)?;
+    emit_watcher_for_task(app, &record.id);
     app.state::<Database>()
         .append_log(
             &record.id,
@@ -1282,8 +1303,8 @@ async fn run_watch_upload_workflow(
     let _permit = match wait_for_worker(&app, &task_id, &control, &pool).await {
         Ok(permit) => permit,
         Err(error) => {
-            fail_task(&app, &task_id, &control, &error);
-            finish_watcher_file(&app, &request.watcher_id, false, Some(&error));
+            fail_watch_upload_task(&app, &task_id, &control, &error);
+            finish_watcher_file(&app, &task_id, &request.watcher_id, false, Some(&error));
             app.state::<TaskEngine>()
                 .controls
                 .write()
@@ -1294,12 +1315,11 @@ async fn run_watch_upload_workflow(
     };
     match execute_watch_upload_workflow(&app, &control, &request).await {
         Ok(()) => {
-            finish_watcher_file(&app, &request.watcher_id, true, None);
-            notify_task_success(&app, &control);
+            finish_watcher_file(&app, &task_id, &request.watcher_id, true, None);
         }
         Err(error) => {
-            fail_task(&app, &task_id, &control, &error);
-            finish_watcher_file(&app, &request.watcher_id, false, Some(&error));
+            fail_watch_upload_task(&app, &task_id, &control, &error);
+            finish_watcher_file(&app, &task_id, &request.watcher_id, false, Some(&error));
         }
     }
     app.state::<TaskEngine>()
@@ -1331,6 +1351,7 @@ async fn execute_watch_upload_workflow(
         runtime.record.error_message = None;
     }
     publish(app, &control.runtime)?;
+    emit_watcher_record(app, &request.watcher_id);
     app.state::<Database>()
         .append_log(
             &snapshot(&control.runtime)?.id,
@@ -1393,10 +1414,6 @@ async fn execute_watch_upload_workflow(
             on_upload_event,
         )
         .await?;
-    let metadata = app
-        .state::<GoogleService>()
-        .metadata(uploaded.id.clone())
-        .await?;
     {
         let mut runtime = control.runtime.lock().map_err(|_| "task lock poisoned")?;
         runtime.record.status = "completed".to_owned();
@@ -1408,52 +1425,53 @@ async fn execute_watch_upload_workflow(
         runtime.record.eta_seconds = Some(0);
         runtime.record.error_message = None;
         runtime.record.drive_file_id = Some(uploaded.id);
-        runtime.record.drive_web_view_link = metadata.web_view_link;
+        runtime.record.drive_web_view_link = uploaded.web_view_link;
         runtime.session_uri = None;
     }
-    publish(app, &control.runtime)?;
-    app.state::<Database>()
-        .append_log(
-            &snapshot(&control.runtime)?.id,
-            "info",
-            "task.completed",
-            "Watched file uploaded successfully",
-        )
-        .map_err(|error| error.to_string())?;
     Ok(())
 }
 
-fn finish_watcher_file(app: &AppHandle, watcher_id: &str, success: bool, error: Option<&str>) {
-    let current = app
+fn finish_watcher_file(
+    app: &AppHandle,
+    task_id: &str,
+    watcher_id: &str,
+    success: bool,
+    error: Option<&str>,
+) {
+    match app
         .state::<Database>()
-        .list_watchers()
-        .ok()
-        .and_then(|watchers| {
-            watchers
-                .into_iter()
-                .find(|watcher| watcher.id == watcher_id)
-        });
-    let (enabled, status) = current
-        .as_ref()
-        .map(|watcher| (watcher.enabled, watcher.status.as_str()))
-        .unwrap_or((false, "failed"));
-    let error_message = error.map(str::to_owned).or_else(|| {
-        current
-            .as_ref()
-            .and_then(|watcher| watcher.error_message.clone())
-    });
-    let _ = app.state::<Database>().update_watcher_state(
-        watcher_id,
-        enabled,
-        status,
-        0,
-        u64::from(success),
-        u64::from(!success),
-        None,
-        error_message.as_deref(),
-        false,
-    );
-    emit_watcher_record(app, watcher_id);
+        .settle_watch_upload_task(task_id, watcher_id, success, error)
+    {
+        Ok(()) => emit_watcher_record(app, watcher_id),
+        Err(initial_error) => {
+            eprintln!("FileForge could not settle watcher upload: {initial_error}");
+            let app = app.clone();
+            let task_id = task_id.to_owned();
+            let watcher_id = watcher_id.to_owned();
+            let error = error.map(str::to_owned);
+            tauri::async_runtime::spawn(async move {
+                let mut delay = Duration::from_millis(250);
+                loop {
+                    tokio::time::sleep(delay).await;
+                    match app.state::<Database>().settle_watch_upload_task(
+                        &task_id,
+                        &watcher_id,
+                        success,
+                        error.as_deref(),
+                    ) {
+                        Ok(()) => {
+                            emit_watcher_record(&app, &watcher_id);
+                            break;
+                        }
+                        Err(retry_error) => {
+                            eprintln!("FileForge watcher settlement retry failed: {retry_error}");
+                            delay = (delay * 2).min(Duration::from_secs(30));
+                        }
+                    }
+                }
+            });
+        }
+    }
 }
 
 fn emit_watcher_record(app: &AppHandle, watcher_id: &str) {
@@ -1464,6 +1482,12 @@ fn emit_watcher_record(app: &AppHandle, watcher_id: &str) {
         {
             let _ = app.emit("watcher-progress", record);
         }
+    }
+}
+
+fn emit_watcher_for_task(app: &AppHandle, task_id: &str) {
+    if let Ok(Some(watcher_id)) = app.state::<Database>().task_watcher_id(task_id) {
+        emit_watcher_record(app, &watcher_id);
     }
 }
 
@@ -1513,8 +1537,23 @@ fn fail_task(app: &AppHandle, task_id: &str, control: &TaskControl, error: &str)
         .append_log(task_id, "error", "task.failed", error);
     let _ = publish(app, &control.runtime);
     if let Ok(record) = snapshot(&control.runtime) {
-        desktop::notify_task_result(app, &record.name, false, Some(error));
+        if record.kind != "watch-upload" {
+            desktop::notify_task_result(app, &record.name, false, Some(error));
+        }
     }
+}
+
+fn fail_watch_upload_task(app: &AppHandle, task_id: &str, control: &TaskControl, error: &str) {
+    if let Ok(mut runtime) = control.runtime.lock() {
+        runtime.record.status = "failed".to_owned();
+        runtime.record.stage = "failed".to_owned();
+        runtime.record.error_message = Some(error.to_owned());
+        runtime.record.speed_bytes_per_second = None;
+        runtime.record.eta_seconds = None;
+    }
+    let _ = app
+        .state::<Database>()
+        .append_log(task_id, "error", "task.failed", error);
 }
 
 fn notify_task_success(app: &AppHandle, control: &TaskControl) {
@@ -1759,8 +1798,10 @@ fn publish(app: &AppHandle, runtime: &Arc<StdMutex<TaskRuntime>>) -> Result<(), 
             drive_web_view_link: record.drive_web_view_link.as_deref(),
         })
         .map_err(|error| error.to_string())?;
-    app.emit("task-progress", &record)
-        .map_err(|error| error.to_string())?;
+    if record.kind != "watch-upload" {
+        app.emit("task-progress", &record)
+            .map_err(|error| error.to_string())?;
+    }
     Ok(())
 }
 

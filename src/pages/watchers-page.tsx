@@ -1,4 +1,5 @@
 import { zodResolver } from "@hookform/resolvers/zod";
+import { isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import {
   Clock3,
@@ -22,21 +23,26 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { mergeRecordsByUpdatedAt } from "@/lib/record-utils";
 import {
   createWatcher,
   deleteWatcher,
+  listGoogleDriveFolder,
   listWatchers,
   pickFolder,
   restartWatcher,
   stopWatcher,
 } from "@/lib/tauri";
 import { formatRelativeTime } from "@/lib/utils";
+import { useAppStore } from "@/store/app-store";
+import type { DriveFile } from "@/types/drive";
 import type { FolderWatcher, WatcherStatus } from "@/types/task";
 
+const FOLDER_MIME = "application/vnd.google-apps.folder";
 const formSchema = z.object({
   name: z.string().max(100),
   localPath: z.string().min(1, "Choose a local folder."),
-  driveFolderId: z.string().min(1, "Enter a Google Drive folder ID.").max(256),
+  driveFolderId: z.string().min(1, "Choose a Google Drive destination.").max(256),
   settlingDelaySeconds: z.number().int().min(1).max(10),
   extensions: z.string().min(1, "Enter at least one extension."),
 });
@@ -58,7 +64,9 @@ const statusVariant: Record<WatcherStatus, "info" | "warning" | "neutral" | "dan
 };
 
 export function WatchersPage() {
+  const removeTask = useAppStore((state) => state.removeTask);
   const [watchers, setWatchers] = useState<FolderWatcher[]>([]);
+  const [folders, setFolders] = useState<DriveFile[]>([]);
   const [showForm, setShowForm] = useState(false);
   const [nativeError, setNativeError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -74,7 +82,7 @@ export function WatchersPage() {
     defaultValues: {
       name: "",
       localPath: "",
-      driveFolderId: "",
+      driveFolderId: "root",
       settlingDelaySeconds: 3,
       extensions: "jpg, jpeg, png, mp4, mov",
     },
@@ -84,31 +92,62 @@ export function WatchersPage() {
   useEffect(() => {
     let disposed = false;
     let unlisten: (() => void) | undefined;
-    listWatchers()
-      .then((records) => {
-        if (!disposed) setWatchers(records);
-      })
-      .catch(() => {
-        // Browser-only preview has no native watcher service.
-      });
-    listen<FolderWatcher>("watcher-progress", (event) => {
-      setWatchers((current) => {
-        const exists = current.some((watcher) => watcher.id === event.payload.id);
-        return exists
-          ? current.map((watcher) => watcher.id === event.payload.id ? event.payload : watcher)
-          : [event.payload, ...current];
-      });
-    })
-      .then((dispose) => {
-        if (disposed) dispose();
-        else unlisten = dispose;
-      })
-      .catch(() => undefined);
+
+    async function subscribeAndHydrate() {
+      try {
+        const dispose = await listen<FolderWatcher>("watcher-progress", (event) => {
+          setWatchers((current) => mergeRecordsByUpdatedAt(current, [event.payload], true));
+        });
+        if (disposed) {
+          dispose();
+          return;
+        }
+        unlisten = dispose;
+      } catch {
+        // Event listening is only available inside Tauri.
+      }
+
+      if (disposed) return;
+      try {
+        const records = await listWatchers();
+        if (!disposed) {
+          setWatchers((current) => mergeRecordsByUpdatedAt(current, records));
+        }
+      } catch (error) {
+        if (!disposed && isTauri()) {
+          const message = error instanceof Error ? error.message : String(error);
+          setNativeError(`Could not load folder watchers: ${message}`);
+        }
+      }
+    }
+
+    void subscribeAndHydrate();
     return () => {
       disposed = true;
       unlisten?.();
     };
   }, []);
+
+  useEffect(() => {
+    if (!showForm) return;
+
+    let disposed = false;
+    listGoogleDriveFolder()
+      .then((page) => {
+        if (!disposed) {
+          setFolders(page.files.filter((file) => file.mimeType === FOLDER_MIME));
+        }
+      })
+      .catch((error) => {
+        if (!disposed) {
+          setNativeError(error instanceof Error ? error.message : String(error));
+        }
+      });
+
+    return () => {
+      disposed = true;
+    };
+  }, [showForm]);
 
   async function chooseFolder() {
     setNativeError(null);
@@ -133,11 +172,21 @@ export function WatchersPage() {
           .map((value) => value.trim())
           .filter(Boolean),
       });
-      setWatchers((current) => [record, ...current]);
+      setWatchers((current) => mergeRecordsByUpdatedAt(current, [record]));
       reset();
       setShowForm(false);
     } catch (error) {
-      setNativeError(error instanceof Error ? error.message : String(error));
+      const message = error instanceof Error ? error.message : String(error);
+      setNativeError(message);
+      try {
+        const records = await listWatchers();
+        setWatchers((current) => mergeRecordsByUpdatedAt(current, records));
+      } catch (refreshError) {
+        const refreshMessage = refreshError instanceof Error
+          ? refreshError.message
+          : String(refreshError);
+        setNativeError(`${message} Could not refresh folder watchers: ${refreshMessage}`);
+      }
     }
   }
 
@@ -148,7 +197,7 @@ export function WatchersPage() {
       if (watcher.enabled) await stopWatcher(watcher.id);
       else {
         const updated = await restartWatcher(watcher.id);
-        setWatchers((current) => current.map((item) => item.id === updated.id ? updated : item));
+        setWatchers((current) => mergeRecordsByUpdatedAt(current, [updated]));
       }
     } catch (error) {
       setNativeError(error instanceof Error ? error.message : String(error));
@@ -163,6 +212,7 @@ export function WatchersPage() {
     try {
       await deleteWatcher(watcher.id);
       setWatchers((current) => current.filter((item) => item.id !== watcher.id));
+      removeTask(`watcher:${watcher.id}`);
     } catch (error) {
       setNativeError(error instanceof Error ? error.message : String(error));
     } finally {
@@ -196,8 +246,11 @@ export function WatchersPage() {
                 <Input placeholder="Render output" {...register("name")} />
               </label>
               <label className="space-y-2 text-xs font-semibold">
-                Google Drive folder ID
-                <Input placeholder="1AbC..." {...register("driveFolderId")} />
+                Google Drive destination
+                <select className="h-10 w-full rounded-xl border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring" {...register("driveFolderId")}>
+                  <option value="root">My Drive</option>
+                  {folders.map((folder) => <option key={folder.id} value={folder.id}>{folder.name}</option>)}
+                </select>
                 {errors.driveFolderId ? <span className="block font-normal text-red-600">{errors.driveFolderId.message}</span> : null}
               </label>
               <label className="space-y-2 text-xs font-semibold sm:col-span-2">
@@ -243,10 +296,9 @@ export function WatchersPage() {
                     </div>
                     <Badge variant={statusVariant[watcher.status]}>{statusLabel[watcher.status]}</Badge>
                   </div>
-                  <div className="mt-4 grid grid-cols-3 gap-2 text-center">
+                  <div className="mt-4 grid grid-cols-2 gap-2 text-center">
                     <div className="rounded-xl bg-muted/60 p-2"><p className="text-lg font-semibold">{watcher.filesDetected}</p><p className="text-[10px] text-muted-foreground">Detected</p></div>
-                    <div className="rounded-xl bg-emerald-500/10 p-2"><p className="text-lg font-semibold text-emerald-700 dark:text-emerald-300">{watcher.filesUploaded}</p><p className="text-[10px] text-muted-foreground">Uploaded</p></div>
-                    <div className="rounded-xl bg-red-500/10 p-2"><p className="text-lg font-semibold text-red-700 dark:text-red-300">{watcher.filesFailed}</p><p className="text-[10px] text-muted-foreground">Failed</p></div>
+                    <div className="rounded-xl bg-emerald-500/10 p-2"><p className="text-lg font-semibold text-emerald-700 dark:text-emerald-300">{watcher.filesUploaded ?? 0}</p><p className="text-[10px] text-muted-foreground">Uploaded</p></div>
                   </div>
                   <div className="mt-3 space-y-1 text-[11px] text-muted-foreground">
                     <p>{watcher.includeExtensions.map((value) => `.${value}`).join(", ")} · stable for {watcher.settlingDelayMs / 1_000}s</p>

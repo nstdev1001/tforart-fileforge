@@ -153,10 +153,13 @@ pub fn set_desktop_preferences(
     database: State<'_, Database>,
 ) -> Result<DesktopPreferences, String> {
     let autostart = app.autolaunch();
-    if request.auto_start {
-        autostart.enable().map_err(|error| error.to_string())?;
-    } else {
-        autostart.disable().map_err(|error| error.to_string())?;
+    let auto_start_enabled = autostart.is_enabled().map_err(|error| error.to_string())?;
+    if auto_start_enabled != request.auto_start {
+        if request.auto_start {
+            autostart.enable().map_err(|error| error.to_string())?;
+        } else {
+            autostart.disable().map_err(|error| error.to_string())?;
+        }
     }
     database
         .set_setting(SETTING_AUTOSTART, &request.auto_start.to_string())

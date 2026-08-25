@@ -11,7 +11,7 @@ use std::{
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::Deserialize;
 use tauri::{AppHandle, Emitter, Manager, State};
-use tokio::sync::{mpsc, Notify, RwLock};
+use tokio::sync::{mpsc, Mutex, Notify, RwLock};
 use uuid::Uuid;
 
 use crate::{
@@ -28,12 +28,14 @@ const GOOGLE_FOLDER_MIME_TYPE: &str = "application/vnd.google-apps.folder";
 
 pub struct WatcherService {
     controls: RwLock<HashMap<String, Arc<WatcherControl>>>,
+    lifecycle: Mutex<()>,
 }
 
 impl WatcherService {
     pub fn new() -> Self {
         Self {
             controls: RwLock::new(HashMap::new()),
+            lifecycle: Mutex::new(()),
         }
     }
 }
@@ -73,9 +75,17 @@ struct WatcherConfig {
     name: String,
     local_path: PathBuf,
     drive_folder_id: String,
+    drive_web_view_link: String,
     settling_delay: Duration,
     include_extensions: HashSet<String>,
     auto_stop: Duration,
+    files_failed_at_start: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LaunchOutcome {
+    Started,
+    AlreadyActive,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -90,7 +100,75 @@ struct Candidate {
 }
 
 #[tauri::command]
-pub fn list_watchers(database: State<'_, Database>) -> Result<Vec<WatcherRecord>, String> {
+pub async fn list_watchers(
+    database: State<'_, Database>,
+    google: State<'_, GoogleService>,
+) -> Result<Vec<WatcherRecord>, String> {
+    let records = database
+        .list_watchers()
+        .map_err(|error| error.to_string())?;
+    let needs_backfill = records.iter().any(|record| {
+        record
+            .drive_folder_name
+            .as_deref()
+            .is_none_or(|name| name.trim().is_empty())
+            && record
+                .drive_folder_id
+                .as_deref()
+                .is_some_and(|id| !id.trim().is_empty())
+    });
+    if !needs_backfill {
+        return Ok(records);
+    }
+
+    let _ = tokio::time::timeout(Duration::from_secs(5), async {
+        for record in &records {
+            if record
+                .drive_folder_name
+                .as_deref()
+                .is_some_and(|name| !name.trim().is_empty())
+            {
+                continue;
+            }
+            let Some(drive_folder_id) = record
+                .drive_folder_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|id| !id.is_empty())
+            else {
+                continue;
+            };
+
+            let drive_folder_name = if drive_folder_id == "root" {
+                "My Drive".to_owned()
+            } else {
+                let folder = match google.metadata(drive_folder_id.to_owned()).await {
+                    Ok(folder)
+                        if folder.mime_type == GOOGLE_FOLDER_MIME_TYPE
+                            && !folder.trashed
+                            && !folder.name.trim().is_empty() =>
+                    {
+                        folder
+                    }
+                    Ok(_) | Err(_) => continue,
+                };
+                folder.name
+            };
+
+            if let Err(error) = database.cache_watcher_drive_folder_name(
+                &record.id,
+                drive_folder_id,
+                &drive_folder_name,
+            ) {
+                eprintln!(
+                    "FileForge could not cache the Drive folder name for watcher {}: {error}",
+                    record.id
+                );
+            }
+        }
+    })
+    .await;
+
     database.list_watchers().map_err(|error| error.to_string())
 }
 
@@ -109,12 +187,30 @@ pub async fn create_watcher(
     if !local_path.is_dir() {
         return Err("watch path must be a folder".to_owned());
     }
+    let local_path_text = local_path.to_string_lossy().into_owned();
     let extensions = normalize_extensions(request.include_extensions)?;
+
+    // Treat the canonical local path as the watcher identity. Returning an
+    // already-running watcher makes retries/double submissions idempotent and,
+    // importantly, avoids mutating the configuration used by its live task.
+    {
+        let _lifecycle = service.lifecycle.lock().await;
+        if let Some(existing) = database
+            .find_watcher_by_local_path(&local_path_text)
+            .map_err(|error| error.to_string())?
+        {
+            if service.controls.read().await.contains_key(&existing.id) {
+                return Ok(existing);
+            }
+        }
+    }
+
     let drive_folder_id = request.drive_folder_id.trim().to_owned();
     let folder = google.metadata(drive_folder_id.clone()).await?;
     if folder.mime_type != GOOGLE_FOLDER_MIME_TYPE || folder.trashed {
         return Err("Google Drive destination must be an active folder".to_owned());
     }
+    let drive_web_view_link = folder_web_view_link(&folder.id, folder.web_view_link.as_deref());
 
     let id = Uuid::new_v4().to_string();
     let name = if request.name.trim().is_empty() {
@@ -126,12 +222,28 @@ pub async fn create_watcher(
     } else {
         request.name.trim().to_owned()
     };
-    database
-        .create_watcher(
+
+    // Google validation can take time, so re-check under the lifecycle lock.
+    // A concurrent create/restart may have activated this path while the
+    // metadata request was in flight.
+    let _lifecycle = service.lifecycle.lock().await;
+    if let Some(existing) = database
+        .find_watcher_by_local_path(&local_path_text)
+        .map_err(|error| error.to_string())?
+    {
+        if service.controls.read().await.contains_key(&existing.id) {
+            return Ok(existing);
+        }
+    }
+
+    let id = database
+        .create_or_reconfigure_watcher(
             &id,
             &name,
-            &local_path.to_string_lossy(),
+            &local_path_text,
             &drive_folder_id,
+            &folder.name,
+            &drive_web_view_link,
             request.settling_delay_ms,
             &extensions,
             DEFAULT_AUTO_STOP_SECONDS,
@@ -139,9 +251,18 @@ pub async fn create_watcher(
         .map_err(|error| error.to_string())?;
 
     let record = find_watcher(&database, &id)?;
-    launch_watcher(&app, &service, watcher_config(&record)?).await?;
-    emit_watcher(&app, &id);
-    Ok(record)
+    let config = match watcher_config(&record) {
+        Ok(config) => config,
+        Err(error) => {
+            fail_watcher(&app, &id, &error);
+            return Err(error);
+        }
+    };
+    if let Err(error) = launch_watcher(&app, &service, config).await {
+        fail_watcher(&app, &id, &error);
+        return Err(error);
+    }
+    find_watcher(&database, &id)
 }
 
 #[tauri::command]
@@ -167,15 +288,22 @@ pub async fn restart_watcher(
     database: State<'_, Database>,
     service: State<'_, WatcherService>,
 ) -> Result<WatcherRecord, String> {
-    if service.controls.read().await.contains_key(&watcher_id) {
-        return Err("watcher is already active".to_owned());
-    }
+    let _lifecycle = service.lifecycle.lock().await;
     let record = find_watcher(&database, &watcher_id)?;
-    database
-        .update_watcher_state(&watcher_id, true, "watching", 0, 0, 0, None, None, true)
-        .map_err(|error| error.to_string())?;
-    launch_watcher(&app, &service, watcher_config(&record)?).await?;
-    emit_watcher(&app, &watcher_id);
+    if service.controls.read().await.contains_key(&watcher_id) {
+        return Ok(record);
+    }
+    let config = match watcher_config(&record) {
+        Ok(config) => config,
+        Err(error) => {
+            fail_watcher(&app, &watcher_id, &error);
+            return Err(error);
+        }
+    };
+    if let Err(error) = launch_watcher(&app, &service, config).await {
+        fail_watcher(&app, &watcher_id, &error);
+        return Err(error);
+    }
     find_watcher(&database, &watcher_id)
 }
 
@@ -185,6 +313,7 @@ pub async fn delete_watcher(
     database: State<'_, Database>,
     service: State<'_, WatcherService>,
 ) -> Result<(), String> {
+    let _lifecycle = service.lifecycle.lock().await;
     if service.controls.read().await.contains_key(&watcher_id) {
         return Err("stop the watcher before deleting it".to_owned());
     }
@@ -203,14 +332,26 @@ pub async fn restore_enabled_watchers(app: AppHandle) {
     };
     for record in records {
         let id = record.id.clone();
-        let config = match watcher_config(&record) {
+        let service = app.state::<WatcherService>();
+        let _lifecycle = service.lifecycle.lock().await;
+        let current = match find_watcher(&app.state::<Database>(), &id) {
+            Ok(record) if record.enabled => record,
+            Ok(_) => continue,
+            Err(error) => {
+                eprintln!("FileForge could not restore watcher {id}: {error}");
+                continue;
+            }
+        };
+        if service.controls.read().await.contains_key(&id) {
+            continue;
+        }
+        let config = match watcher_config(&current) {
             Ok(config) => config,
             Err(error) => {
                 fail_watcher(&app, &id, &error);
                 continue;
             }
         };
-        let service = app.state::<WatcherService>();
         if let Err(error) = launch_watcher(&app, &service, config).await {
             fail_watcher(&app, &id, &error);
         }
@@ -221,54 +362,111 @@ async fn launch_watcher(
     app: &AppHandle,
     service: &WatcherService,
     config: WatcherConfig,
-) -> Result<(), String> {
+) -> Result<LaunchOutcome, String> {
     if !config.local_path.is_dir() {
         return Err("watch folder no longer exists".to_owned());
     }
-    let control = Arc::new(WatcherControl::new());
-    service
-        .controls
-        .write()
-        .await
-        .insert(config.id.clone(), control.clone());
+    let Some(control) = reserve_watcher_control(service, &config.id).await else {
+        return Ok(LaunchOutcome::AlreadyActive);
+    };
+
+    let (native, event_rx) = match initialize_native_watcher(&config.local_path) {
+        Ok(native) => native,
+        Err(error) => {
+            release_watcher_control(service, &config.id, &control).await;
+            return Err(error);
+        }
+    };
+    if let Err(error) = app.state::<Database>().update_watcher_state(
+        &config.id,
+        true,
+        "watching",
+        0,
+        0,
+        0,
+        Some(&config.drive_web_view_link),
+        None,
+        true,
+    ) {
+        release_watcher_control(service, &config.id, &control).await;
+        return Err(error.to_string());
+    }
+    emit_watcher(app, &config.id);
+
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         let id = config.id.clone();
-        if let Err(error) = run_watcher(&app, config, control).await {
+        let runtime_control = control.clone();
+        if let Err(error) = run_watcher(&app, config, runtime_control, native, event_rx).await {
             fail_watcher(&app, &id, &error);
         }
-        app.state::<WatcherService>()
-            .controls
-            .write()
-            .await
-            .remove(&id);
+        release_watcher_control(&app.state::<WatcherService>(), &id, &control).await;
     });
-    Ok(())
+    Ok(LaunchOutcome::Started)
 }
 
-async fn run_watcher(
-    app: &AppHandle,
-    config: WatcherConfig,
-    control: Arc<WatcherControl>,
-) -> Result<(), String> {
-    let (event_tx, mut event_rx) = mpsc::unbounded_channel();
+fn initialize_native_watcher(
+    local_path: &Path,
+) -> Result<
+    (
+        RecommendedWatcher,
+        mpsc::UnboundedReceiver<notify::Result<Event>>,
+    ),
+    String,
+> {
+    let (event_tx, event_rx) = mpsc::unbounded_channel();
     let mut native: RecommendedWatcher =
         notify::recommended_watcher(move |result: notify::Result<Event>| {
             let _ = event_tx.send(result);
         })
         .map_err(|error| format!("cannot initialize native watcher: {error}"))?;
     native
-        .watch(&config.local_path, RecursiveMode::Recursive)
+        .watch(local_path, RecursiveMode::Recursive)
         .map_err(|error| format!("cannot watch folder: {error}"))?;
+    Ok((native, event_rx))
+}
 
-    app.state::<Database>()
-        .update_watcher_state(&config.id, true, "watching", 0, 0, 0, None, None, true)
-        .map_err(|error| error.to_string())?;
-    emit_watcher(app, &config.id);
+async fn reserve_watcher_control(
+    service: &WatcherService,
+    id: &str,
+) -> Option<Arc<WatcherControl>> {
+    let mut controls = service.controls.write().await;
+    if controls.contains_key(id) {
+        return None;
+    }
+    let control = Arc::new(WatcherControl::new());
+    controls.insert(id.to_owned(), control.clone());
+    Some(control)
+}
 
+async fn release_watcher_control(
+    service: &WatcherService,
+    id: &str,
+    expected: &Arc<WatcherControl>,
+) {
+    let mut controls = service.controls.write().await;
+    if controls
+        .get(id)
+        .is_some_and(|current| Arc::ptr_eq(current, expected))
+    {
+        controls.remove(id);
+    }
+}
+
+async fn run_watcher(
+    app: &AppHandle,
+    config: WatcherConfig,
+    control: Arc<WatcherControl>,
+    native: RecommendedWatcher,
+    mut event_rx: mpsc::UnboundedReceiver<notify::Result<Event>>,
+) -> Result<(), String> {
     let mut candidates = HashMap::<PathBuf, Candidate>::new();
     let mut dispatched = HashSet::<PathBuf>::new();
-    let mut last_file_event = Instant::now();
+    // An export can spend longer than the inactivity window preparing its first
+    // output. Start the auto-stop countdown only after a matching file has
+    // actually become stable, otherwise an empty watcher reports success before
+    // the exporter writes anything.
+    let mut last_detected_file = None;
     let mut stability_tick = tokio::time::interval(Duration::from_millis(250));
 
     loop {
@@ -292,7 +490,6 @@ async fn run_watcher(
                                     signature: None,
                                     unchanged_since: now,
                                 });
-                                last_file_event = now;
                             }
                         }
                     }
@@ -320,12 +517,11 @@ async fn run_watcher(
                         Err(_) => true,
                     }
                 });
+                if !stable.is_empty() {
+                    last_detected_file = Some(now);
+                }
                 for path in stable {
                     dispatched.insert(path.clone());
-                    app.state::<Database>()
-                        .update_watcher_state(&config.id, true, "watching", 1, 0, 0, None, None, true)
-                        .map_err(|error| error.to_string())?;
-                    emit_watcher(app, &config.id);
                     if let Err(error) = task_engine::enqueue_watch_upload(
                         app.clone(),
                         config.id.clone(),
@@ -333,12 +529,17 @@ async fn run_watcher(
                         config.drive_folder_id.clone(),
                     ).await {
                         app.state::<Database>()
-                            .update_watcher_state(&config.id, true, "watching", 0, 0, 1, None, Some(&error), false)
+                            .update_watcher_state(&config.id, true, "watching", 1, 0, 1, None, Some(&error), true)
                             .map_err(|database_error| database_error.to_string())?;
                         emit_watcher(app, &config.id);
                     }
                 }
-                if now.duration_since(last_file_event) >= config.auto_stop {
+                if should_auto_stop(
+                    last_detected_file,
+                    !candidates.is_empty(),
+                    now,
+                    config.auto_stop,
+                ) {
                     break;
                 }
             }
@@ -364,24 +565,42 @@ async fn run_watcher(
     let google = app.state::<GoogleService>();
     google.make_file_public(&config.drive_folder_id).await?;
     let metadata = google.metadata(config.drive_folder_id.clone()).await?;
-    let existing_error = find_watcher(&app.state::<Database>(), &config.id)
-        .ok()
-        .and_then(|watcher| watcher.error_message);
+    let current = find_watcher(&app.state::<Database>(), &config.id)?;
+    let files_failed = new_failure_count(current.files_failed, config.files_failed_at_start);
+    let completed_with_failures = files_failed > 0;
+    let completion_error = current.error_message.or_else(|| {
+        completed_with_failures.then(|| {
+            format!(
+                "{} watched file{} failed to upload",
+                files_failed,
+                if files_failed == 1 { "" } else { "s" }
+            )
+        })
+    });
     app.state::<Database>()
         .update_watcher_state(
             &config.id,
             false,
-            "stopped",
+            if completed_with_failures {
+                "failed"
+            } else {
+                "stopped"
+            },
             0,
             0,
             0,
             metadata.web_view_link.as_deref(),
-            existing_error.as_deref(),
+            completion_error.as_deref(),
             false,
         )
         .map_err(|error| error.to_string())?;
     emit_watcher(app, &config.id);
-    desktop::notify_watcher_result(app, &config.name, true, None);
+    desktop::notify_watcher_result(
+        app,
+        &config.name,
+        !completed_with_failures,
+        completion_error.as_deref(),
+    );
     Ok(())
 }
 
@@ -391,17 +610,38 @@ fn watcher_config(record: &WatcherRecord) -> Result<WatcherConfig, String> {
         .drive_folder_id
         .clone()
         .ok_or_else(|| "watcher has no Drive folder ID".to_owned())?;
+    let drive_web_view_link = record
+        .drive_web_view_link
+        .clone()
+        .filter(|link| !link.trim().is_empty())
+        .unwrap_or_else(|| folder_web_view_link(&drive_folder_id, None));
     Ok(WatcherConfig {
         id: record.id.clone(),
         name: record.name.clone(),
         local_path: PathBuf::from(&record.local_path),
         drive_folder_id,
+        drive_web_view_link,
         settling_delay: Duration::from_millis(record.settling_delay_ms),
         include_extensions: normalize_extensions(record.include_extensions.clone())?
             .into_iter()
             .collect(),
         auto_stop: Duration::from_secs(record.auto_stop_seconds.max(1)),
+        files_failed_at_start: record.files_failed,
     })
+}
+
+fn folder_web_view_link(folder_id: &str, metadata_link: Option<&str>) -> String {
+    metadata_link
+        .map(str::trim)
+        .filter(|link| !link.is_empty())
+        .map(str::to_owned)
+        .unwrap_or_else(|| {
+            if folder_id == "root" {
+                "https://drive.google.com/drive/my-drive".to_owned()
+            } else {
+                format!("https://drive.google.com/drive/folders/{folder_id}")
+            }
+        })
 }
 
 fn normalize_extensions(values: Vec<String>) -> Result<Vec<String>, String> {
@@ -457,6 +697,21 @@ fn file_signature(path: &Path) -> std::io::Result<FileSignature> {
         size: metadata.len(),
         modified: metadata.modified().ok(),
     })
+}
+
+fn should_auto_stop(
+    last_detected_file: Option<Instant>,
+    has_pending_candidates: bool,
+    now: Instant,
+    inactivity_window: Duration,
+) -> bool {
+    !has_pending_candidates
+        && last_detected_file
+            .is_some_and(|last_detected| now.duration_since(last_detected) >= inactivity_window)
+}
+
+fn new_failure_count(total: u64, at_start: u64) -> u64 {
+    total.saturating_sub(at_start)
 }
 
 fn find_watcher(database: &Database, id: &str) -> Result<WatcherRecord, String> {
@@ -537,5 +792,89 @@ mod tests {
         std::fs::write(&path, b"first-second").expect("grow file");
         let second = file_signature(&path).expect("second signature");
         assert_ne!(first.size, second.size);
+    }
+
+    #[test]
+    fn auto_stop_waits_for_a_detected_file_and_pending_candidates() {
+        let detected_at = Instant::now();
+        let inactivity_window = Duration::from_secs(30);
+
+        assert!(!should_auto_stop(
+            None,
+            false,
+            detected_at + Duration::from_secs(60),
+            inactivity_window,
+        ));
+        assert!(!should_auto_stop(
+            Some(detected_at),
+            true,
+            detected_at + Duration::from_secs(60),
+            inactivity_window,
+        ));
+        assert!(!should_auto_stop(
+            Some(detected_at),
+            false,
+            detected_at + Duration::from_secs(29),
+            inactivity_window,
+        ));
+        assert!(should_auto_stop(
+            Some(detected_at),
+            false,
+            detected_at + inactivity_window,
+            inactivity_window,
+        ));
+    }
+
+    #[test]
+    fn folder_link_is_available_before_watcher_completion() {
+        assert_eq!(
+            folder_web_view_link(
+                "folder-id",
+                Some("https://drive.google.com/drive/folders/from-metadata"),
+            ),
+            "https://drive.google.com/drive/folders/from-metadata"
+        );
+        assert_eq!(
+            folder_web_view_link("folder-id", None),
+            "https://drive.google.com/drive/folders/folder-id"
+        );
+        assert_eq!(
+            folder_web_view_link("root", None),
+            "https://drive.google.com/drive/my-drive"
+        );
+    }
+
+    #[test]
+    fn earlier_run_failures_do_not_poison_a_clean_restart() {
+        assert_eq!(new_failure_count(3, 3), 0);
+        assert_eq!(new_failure_count(5, 3), 2);
+        assert_eq!(new_failure_count(2, 3), 0);
+    }
+
+    #[tokio::test]
+    async fn watcher_control_reservation_never_overwrites_a_live_control() {
+        let service = WatcherService::new();
+        let first = reserve_watcher_control(&service, "watcher-one")
+            .await
+            .expect("first reservation");
+        assert!(reserve_watcher_control(&service, "watcher-one")
+            .await
+            .is_none());
+
+        let stored = service
+            .controls
+            .read()
+            .await
+            .get("watcher-one")
+            .cloned()
+            .expect("stored control");
+        assert!(Arc::ptr_eq(&stored, &first));
+
+        let unrelated = Arc::new(WatcherControl::new());
+        release_watcher_control(&service, "watcher-one", &unrelated).await;
+        assert!(service.controls.read().await.contains_key("watcher-one"));
+
+        release_watcher_control(&service, "watcher-one", &first).await;
+        assert!(!service.controls.read().await.contains_key("watcher-one"));
     }
 }
