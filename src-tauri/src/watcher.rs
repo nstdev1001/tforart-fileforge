@@ -17,7 +17,7 @@ use uuid::Uuid;
 use crate::{
     database::{Database, WatcherRecord},
     desktop,
-    google::GoogleService,
+    google::{DriveError, GoogleService},
     task_engine,
 };
 
@@ -25,6 +25,8 @@ const DEFAULT_AUTO_STOP_SECONDS: u64 = 30;
 const MIN_SETTLING_DELAY_MS: u64 = 1_000;
 const MAX_SETTLING_DELAY_MS: u64 = 10_000;
 const GOOGLE_FOLDER_MIME_TYPE: &str = "application/vnd.google-apps.folder";
+const FINALIZE_RETRY_INITIAL: Duration = Duration::from_secs(5);
+const FINALIZE_RETRY_MAX: Duration = Duration::from_secs(30);
 
 pub struct WatcherService {
     controls: RwLock<HashMap<String, Arc<WatcherControl>>>,
@@ -111,7 +113,7 @@ pub async fn list_watchers(
         record
             .drive_folder_name
             .as_deref()
-            .is_none_or(|name| name.trim().is_empty())
+            .map_or(true, |name| name.trim().is_empty())
             && record
                 .drive_folder_id
                 .as_deref()
@@ -190,23 +192,29 @@ pub async fn create_watcher(
     let local_path_text = local_path.to_string_lossy().into_owned();
     let extensions = normalize_extensions(request.include_extensions)?;
 
-    // Treat the canonical local path as the watcher identity. Returning an
-    // already-running watcher makes retries/double submissions idempotent and,
-    // importantly, avoids mutating the configuration used by its live task.
+    // Treat the canonical local path as the watcher identity. Persisted
+    // `enabled` is authoritative even before asynchronous startup restoration
+    // reserves a runtime control, so retries cannot overwrite a draining run.
     {
         let _lifecycle = service.lifecycle.lock().await;
         if let Some(existing) = database
             .find_watcher_by_local_path(&local_path_text)
             .map_err(|error| error.to_string())?
         {
-            if service.controls.read().await.contains_key(&existing.id) {
+            if should_return_existing_watcher(
+                existing.enabled,
+                service.controls.read().await.contains_key(&existing.id),
+            ) {
                 return Ok(existing);
             }
         }
     }
 
     let drive_folder_id = request.drive_folder_id.trim().to_owned();
-    let folder = google.metadata(drive_folder_id.clone()).await?;
+    let folder = google
+        .metadata(drive_folder_id.clone())
+        .await
+        .map_err(|error| error.to_string())?;
     if folder.mime_type != GOOGLE_FOLDER_MIME_TYPE || folder.trashed {
         return Err("Google Drive destination must be an active folder".to_owned());
     }
@@ -231,7 +239,10 @@ pub async fn create_watcher(
         .find_watcher_by_local_path(&local_path_text)
         .map_err(|error| error.to_string())?
     {
-        if service.controls.read().await.contains_key(&existing.id) {
+        if should_return_existing_watcher(
+            existing.enabled,
+            service.controls.read().await.contains_key(&existing.id),
+        ) {
             return Ok(existing);
         }
     }
@@ -300,7 +311,12 @@ pub async fn restart_watcher(
             return Err(error);
         }
     };
-    if let Err(error) = launch_watcher(&app, &service, config).await {
+    let launch_result = if should_resume_finalization(&record.status) {
+        launch_watcher_finalizer(&app, &service, config).await
+    } else {
+        launch_watcher(&app, &service, config).await
+    };
+    if let Err(error) = launch_result {
         fail_watcher(&app, &watcher_id, &error);
         return Err(error);
     }
@@ -352,7 +368,12 @@ pub async fn restore_enabled_watchers(app: AppHandle) {
                 continue;
             }
         };
-        if let Err(error) = launch_watcher(&app, &service, config).await {
+        let launch_result = if should_resume_finalization(&current.status) {
+            launch_watcher_finalizer(&app, &service, config).await
+        } else {
+            launch_watcher(&app, &service, config).await
+        };
+        if let Err(error) = launch_result {
             fail_watcher(&app, &id, &error);
         }
     }
@@ -398,6 +419,26 @@ async fn launch_watcher(
         let id = config.id.clone();
         let runtime_control = control.clone();
         if let Err(error) = run_watcher(&app, config, runtime_control, native, event_rx).await {
+            fail_watcher(&app, &id, &error);
+        }
+        release_watcher_control(&app.state::<WatcherService>(), &id, &control).await;
+    });
+    Ok(LaunchOutcome::Started)
+}
+
+async fn launch_watcher_finalizer(
+    app: &AppHandle,
+    service: &WatcherService,
+    config: WatcherConfig,
+) -> Result<LaunchOutcome, String> {
+    let Some(control) = reserve_watcher_control(service, &config.id).await else {
+        return Ok(LaunchOutcome::AlreadyActive);
+    };
+
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let id = config.id.clone();
+        if let Err(error) = drain_and_finalize_watcher(&app, &config, false).await {
             fail_watcher(&app, &id, &error);
         }
         release_watcher_control(&app.state::<WatcherService>(), &id, &control).await;
@@ -547,10 +588,22 @@ async fn run_watcher(
     }
 
     drop(native);
-    app.state::<Database>()
-        .update_watcher_state(&config.id, true, "draining", 0, 0, 0, None, None, false)
-        .map_err(|error| error.to_string())?;
-    emit_watcher(app, &config.id);
+    drain_and_finalize_watcher(app, &config, true).await
+}
+
+async fn drain_and_finalize_watcher(
+    app: &AppHandle,
+    config: &WatcherConfig,
+    transition_to_draining: bool,
+) -> Result<(), String> {
+    if transition_to_draining {
+        // This transition intentionally leaves counters and error_message
+        // untouched so a concurrently settling child cannot be overwritten.
+        app.state::<Database>()
+            .mark_watcher_draining(&config.id)
+            .map_err(|error| error.to_string())?;
+        emit_watcher(app, &config.id);
+    }
     loop {
         let active = app
             .state::<Database>()
@@ -562,12 +615,13 @@ async fn run_watcher(
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
 
-    let google = app.state::<GoogleService>();
-    google.make_file_public(&config.drive_folder_id).await?;
-    let metadata = google.metadata(config.drive_folder_id.clone()).await?;
+    let drive_web_view_link = finalize_drive_folder(&app.state::<GoogleService>(), config).await?;
     let current = find_watcher(&app.state::<Database>(), &config.id)?;
     let files_failed = new_failure_count(current.files_failed, config.files_failed_at_start);
-    let completed_with_failures = files_failed > 0;
+    // `error_message` is cleared when a watcher run starts. It therefore also
+    // preserves the result if the app crashes after entering `draining`, when
+    // the run's original failure-count baseline is no longer in memory.
+    let completed_with_failures = files_failed > 0 || current.error_message.is_some();
     let completion_error = current.error_message.or_else(|| {
         completed_with_failures.then(|| {
             format!(
@@ -589,7 +643,7 @@ async fn run_watcher(
             0,
             0,
             0,
-            metadata.web_view_link.as_deref(),
+            drive_web_view_link.as_deref(),
             completion_error.as_deref(),
             false,
         )
@@ -602,6 +656,47 @@ async fn run_watcher(
         completion_error.as_deref(),
     );
     Ok(())
+}
+
+async fn finalize_drive_folder(
+    google: &GoogleService,
+    config: &WatcherConfig,
+) -> Result<Option<String>, String> {
+    let mut delay = FINALIZE_RETRY_INITIAL;
+    loop {
+        let result: Result<Option<String>, DriveError> =
+            match google.make_file_public(&config.drive_folder_id).await {
+                Ok(()) => google
+                    .metadata(config.drive_folder_id.clone())
+                    .await
+                    .map(|metadata| metadata.web_view_link),
+                Err(error) => Err(error),
+            };
+        match result {
+            Ok(link) => return Ok(link),
+            Err(error) if error.is_transient_network() => {
+                eprintln!(
+                    "FileForge watcher {} is waiting to finalize its Drive folder: {error}",
+                    config.id
+                );
+                tokio::time::sleep(delay).await;
+                delay = next_finalize_retry(delay);
+            }
+            Err(error) => return Err(error.to_string()),
+        }
+    }
+}
+
+fn next_finalize_retry(current: Duration) -> Duration {
+    (current * 2).min(FINALIZE_RETRY_MAX)
+}
+
+fn should_resume_finalization(status: &str) -> bool {
+    status == "draining"
+}
+
+fn should_return_existing_watcher(enabled: bool, has_runtime_control: bool) -> bool {
+    enabled || has_runtime_control
 }
 
 fn watcher_config(record: &WatcherRecord) -> Result<WatcherConfig, String> {
@@ -849,6 +944,32 @@ mod tests {
         assert_eq!(new_failure_count(3, 3), 0);
         assert_eq!(new_failure_count(5, 3), 2);
         assert_eq!(new_failure_count(2, 3), 0);
+    }
+
+    #[test]
+    fn draining_watchers_resume_only_the_finalization_phase() {
+        assert!(should_resume_finalization("draining"));
+        assert!(!should_resume_finalization("watching"));
+        assert!(!should_resume_finalization("failed"));
+    }
+
+    #[test]
+    fn persisted_enabled_watcher_is_active_before_runtime_restore_finishes() {
+        assert!(should_return_existing_watcher(true, false));
+        assert!(should_return_existing_watcher(false, true));
+        assert!(!should_return_existing_watcher(false, false));
+    }
+
+    #[test]
+    fn watcher_finalization_retry_is_bounded() {
+        let mut delay = FINALIZE_RETRY_INITIAL;
+        delay = next_finalize_retry(delay);
+        assert_eq!(delay, Duration::from_secs(10));
+        delay = next_finalize_retry(delay);
+        assert_eq!(delay, Duration::from_secs(20));
+        delay = next_finalize_retry(delay);
+        assert_eq!(delay, FINALIZE_RETRY_MAX);
+        assert_eq!(next_finalize_retry(delay), FINALIZE_RETRY_MAX);
     }
 
     #[tokio::test]

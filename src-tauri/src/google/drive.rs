@@ -111,6 +111,22 @@ pub enum DriveError {
     DownloadIncomplete,
 }
 
+impl DriveError {
+    pub(crate) fn is_transient_network(&self) -> bool {
+        match self {
+            Self::Network(error) => {
+                error.is_connect() || error.is_timeout() || error.is_request() || error.is_body()
+            }
+            Self::OAuth(OAuthError::TokenTransport(_) | OAuthError::TokenTemporary(_))
+            | Self::DownloadIncomplete => true,
+            Self::Api { status, .. } => {
+                matches!(*status, 408 | 425 | 429) || (500..=599).contains(status)
+            }
+            _ => false,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum UploadEvent {
     SessionCreated(String),
@@ -863,6 +879,37 @@ mod tests {
         let range = header::HeaderValue::from_static("bytes=0-8388607");
         assert_eq!(next_offset_from_range(Some(&range)), 8_388_608);
         assert_eq!(next_offset_from_range(None), 0);
+    }
+
+    #[test]
+    fn transient_errors_are_classified_without_treating_auth_failures_as_offline() {
+        assert!(DriveError::Api {
+            status: 429,
+            message: "rate limited".to_owned(),
+        }
+        .is_transient_network());
+        assert!(DriveError::Api {
+            status: 503,
+            message: "unavailable".to_owned(),
+        }
+        .is_transient_network());
+        assert!(
+            DriveError::OAuth(OAuthError::TokenTransport("connection refused".to_owned()))
+                .is_transient_network()
+        );
+        assert!(
+            DriveError::OAuth(OAuthError::TokenTemporary("server_error".to_owned()))
+                .is_transient_network()
+        );
+        assert!(!DriveError::Api {
+            status: 403,
+            message: "forbidden".to_owned(),
+        }
+        .is_transient_network());
+        assert!(!DriveError::OAuth(OAuthError::AuthorizationRejected(
+            "invalid_grant".to_owned()
+        ))
+        .is_transient_network());
     }
 
     #[test]

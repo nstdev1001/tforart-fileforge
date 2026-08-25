@@ -12,7 +12,7 @@ Implemented:
 - Native Rust commands for folder selection, volume total/free space, and database health.
 - Responsive desktop layout with Dashboard, Tasks, Watchers, History, and Settings views.
 - Light, dark, and system theme support persisted with Zustand.
-- Reusable Task Card visuals for Queued, Running, Paused, Failed, and Completed states.
+- Reusable Task Card visuals for Queued, Running, Waiting for network, Paused, Failed, and Completed states.
 - Settings form using React Hook Form + Zod.
 - Frontend component/unit tests and Rust migration/command tests.
 - OAuth2 Authorization Code flow for desktop with PKCE S256, CSRF state validation, a random loopback port, and a five-minute timeout.
@@ -27,8 +27,9 @@ Implemented:
 - Safe Google Drive link/file-ID parser for common `drive.google.com` and `docs.google.com` URL forms with strict host and ID validation.
 - Authenticated streaming ZIP downloads using `files.get?alt=media`, HTTP Range recovery, pause/resume, backoff, and persisted task metrics.
 - ZIP metadata/capability validation, archive path traversal checks, uncompressed-size disk preflight, native 7-Zip extraction, temporary download cleanup, and automatic Explorer open.
-- Configurable worker pool with a live SQLite-backed concurrency limit from 1 to 10; queued and paused jobs do not consume execution slots.
-- Startup recovery for queued, running, and paused workflows, including persisted Google resumable-upload sessions and HTTP Range continuation from partial download files.
+- Configurable worker pool with a live SQLite-backed concurrency limit from 1 to 10; queued, paused, and network-waiting jobs do not consume execution slots.
+- Startup recovery for queued, running, paused, and network-waiting workflows, including persisted Google resumable-upload sessions and HTTP Range continuation from partial download files.
+- Automatic network-loss handling that parks transient transfer failures in `waiting_for_network`, releases their worker slot, and resumes them when Google Drive is reachable again; failed tasks also expose a manual Retry action.
 - Per-task operational history for queue admission, worker start, stage transitions, retry/backoff events, recovery, completion, warnings, and failures.
 - Native recursive folder watching with configurable 1–10 second stability detection, case-insensitive extension filters, and automatic `.tmp`/`.part` exclusion.
 - Automatic resumable watcher uploads through the shared worker pool, one aggregate watcher task with live file counts, a 30-second inactivity stop, queue draining, and persisted Google Drive folder links.
@@ -132,7 +133,7 @@ Although Google Desktop application client secrets cannot be treated as confiden
 4. Task Cards receive native progress events and expose Pause/Resume during active work. Pausing while compression is running takes effect before the upload stage; upload pauses between chunks.
 5. A successful task exposes a copyable Drive link and removes its temporary ZIP from the app cache.
 
-Resumable sessions and progress are persisted for the recovery worker scheduled in Phase 5. Phase 3 performs automatic in-process network recovery and retains a failed task's temporary ZIP for diagnostics/retry rather than deleting evidence of the failure.
+Resumable sessions and progress are persisted for recovery. Transient network failures move the task to `waiting_for_network` without discarding its ZIP or upload session; the task resumes automatically when connectivity returns. Non-network failures keep their temporary ZIP for diagnostics and can be retried from the Task Card.
 
 ## Download and extract a Drive ZIP
 
@@ -146,7 +147,9 @@ Resumable sessions and progress are persisted for the recovery worker scheduled 
 
 The worker limit is configured under Settings → Task engine and takes effect immediately. Lowering the limit never interrupts an active workflow; it prevents additional queued tasks from starting until the active count falls below the new limit.
 
-On launch, FileForge reloads `queued`, `running`, and `paused` workflows from SQLite. Upload recovery reuses an existing ZIP and asks Google for the committed offset of the saved resumable session. Download recovery opens the task-owned temporary file at its current length and requests the remaining bytes with HTTP Range. A task that had already entered extraction safely reruns 7-Zip with overwrite confirmation, while a paused task remains paused after restart.
+On launch, FileForge reloads `queued`, `running`, `paused`, and `waiting_for_network` workflows from SQLite. Upload recovery reuses an existing ZIP and asks Google for the committed offset of the saved resumable session. Download recovery opens the task-owned temporary file at its current length and requests the remaining bytes with HTTP Range. A task that had already entered extraction safely reruns 7-Zip with overwrite confirmation, while a paused task remains paused after restart.
+
+When a Google Drive operation fails because the network is unavailable or times out, FileForge preserves the current stage and partial artifacts, releases the worker slot, and waits in `waiting_for_network`. A background connectivity check atomically requeues waiting tasks once Drive is reachable, so archive uploads continue from their resumable session and downloads continue from the partial file. Mutable files created by a watcher restart their upload from byte zero after recovery to avoid combining old and replaced content. A task that fails for a non-network reason remains `failed` and can be started again with **Retry**.
 
 Open History to select any persisted task and inspect its chronological operational log.
 
@@ -158,7 +161,7 @@ Open History to select any persisted task and inspect its chronological operatio
 4. FileForge watches the folder recursively. A matching file is queued only after its size and modified timestamp remain unchanged for the full settling delay. `.tmp` and `.part` files are always ignored.
 5. The destination folder link is copyable as soon as monitoring starts. After 30 seconds without a new matching file, the watcher stops accepting events, waits for every queued upload, and then applies public-reader permission to the Drive folder.
 
-Enabled watchers and unfinished uploads are restored after an application restart. Per-file upload jobs remain internal so resumable recovery and the shared worker pool still work, while Tasks, Dashboard, and History expose one aggregate record per watcher with detected and uploaded file counts.
+Enabled watchers and unfinished uploads are restored after an application restart. A watcher that had already entered its draining phase resumes only draining/finalization, including retrying transient Drive sharing failures, instead of opening a new watch session. Per-file upload jobs remain internal so resumable recovery and the shared worker pool still work, while Tasks, Dashboard, and History expose one aggregate record per watcher with detected and uploaded file counts.
 
 ## Desktop background experience
 

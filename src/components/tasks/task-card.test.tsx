@@ -1,10 +1,18 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { TaskCard } from "@/components/tasks/task-card";
+import { retryTask } from "@/lib/tauri";
 import { folderWatcherToTask } from "@/lib/task-utils";
+import { useAppStore } from "@/store/app-store";
 import { TASK_STATUSES, taskStatusLabel, type FolderWatcher, type Task, type TaskStatus } from "@/types/task";
+
+vi.mock("@/lib/tauri", () => ({
+  pauseTask: vi.fn(),
+  resumeTask: vi.fn(),
+  retryTask: vi.fn(),
+}));
 
 function createTask(status: TaskStatus): Task {
   return {
@@ -31,6 +39,11 @@ function createTask(status: TaskStatus): Task {
 }
 
 describe("TaskCard", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    useAppStore.setState({ tasks: [], removedTaskIds: [] });
+  });
+
   it.each(TASK_STATUSES)("renders the %s visual state", (status) => {
     render(<TaskCard task={createTask(status)} />);
 
@@ -40,6 +53,46 @@ describe("TaskCard", () => {
       "aria-valuenow",
       status === "completed" ? "100" : "42",
     );
+  });
+
+  it("explains that a network-waiting task will resume automatically", () => {
+    render(<TaskCard task={createTask("waiting_for_network")} />);
+
+    expect(screen.getByText("Waiting for network")).toBeInTheDocument();
+    expect(screen.getByText(
+      "Resumes automatically when the connection returns",
+    )).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+  });
+
+  it("retries a failed regular task and stores the returned task", async () => {
+    const failedTask = createTask("failed");
+    const queuedTask: Task = {
+      ...failedTask,
+      status: "queued",
+      stage: "queued",
+      errorMessage: undefined,
+      updatedAt: new Date(Date.now() + 1_000).toISOString(),
+    };
+    vi.mocked(retryTask).mockResolvedValue(queuedTask);
+    useAppStore.setState({ tasks: [failedTask] });
+
+    render(<TaskCard task={failedTask} />);
+    await userEvent.click(screen.getByRole("button", { name: "Retry" }));
+
+    expect(retryTask).toHaveBeenCalledWith(failedTask.id);
+    await waitFor(() => {
+      expect(useAppStore.getState().tasks).toContainEqual(queuedTask);
+    });
+  });
+
+  it("does not offer task retry for a failed watcher aggregate", () => {
+    const watcherTask = createTask("failed");
+    watcherTask.kind = "watcher";
+
+    render(<TaskCard task={watcherTask} />);
+
+    expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
   });
 
   it("constrains long task content to the available card width", () => {

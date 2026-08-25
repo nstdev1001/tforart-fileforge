@@ -184,3 +184,7 @@ export async function pauseTask(taskId: string): Promise<Task> {
 export async function resumeTask(taskId: string): Promise<Task> {
   return invoke<Task>("resume_task", { taskId });
 }
+
+export async function retryTask(taskId: string): Promise<Task> {
+  return invoke<Task>("retry_task", { taskId });
+}

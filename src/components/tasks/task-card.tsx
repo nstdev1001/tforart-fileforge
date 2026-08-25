@@ -12,6 +12,7 @@ import {
   RotateCcw,
   Square,
   UploadCloud,
+  WifiOff,
 } from "lucide-react";
 import { useState } from "react";
 
@@ -19,9 +20,9 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
-import { isWatcherAggregateTask } from "@/lib/task-utils";
+import { isWatcherAggregateTask, isWatcherChildTask } from "@/lib/task-utils";
 import { cn, formatBytes, formatRelativeTime } from "@/lib/utils";
-import { pauseTask, resumeTask } from "@/lib/tauri";
+import { pauseTask, resumeTask, retryTask } from "@/lib/tauri";
 import { useAppStore } from "@/store/app-store";
 import { taskStageLabel, taskStatusLabel, type Task, type TaskStatus } from "@/types/task";
 
@@ -31,6 +32,7 @@ const statusAppearance: Record<
 > = {
   queued: { badge: "neutral", icon: Clock3, color: "bg-muted-foreground" },
   running: { badge: "info", icon: Play, color: "bg-sky-500" },
+  waiting_for_network: { badge: "warning", icon: WifiOff, color: "bg-amber-500" },
   paused: { badge: "warning", icon: Pause, color: "bg-amber-500" },
   stopped: { badge: "neutral", icon: Square, color: "bg-muted-foreground" },
   failed: { badge: "danger", icon: CircleAlert, color: "bg-red-500" },
@@ -58,6 +60,8 @@ export function TaskCard({ task }: { task: Task }) {
   const isWatcherAggregate = isWatcherAggregateTask(task);
   const canTogglePause =
     !isWatcherAggregate && (task.status === "running" || task.status === "paused");
+  const canRetry =
+    task.status === "failed" && !isWatcherAggregate && !isWatcherChildTask(task);
   const displayProgress = task.status === "completed" ? 100 : task.progress;
   const trackedFolderName = isWatcherAggregate ? folderNameFromPath(task.sourcePath) : undefined;
   const driveFolderName = task.driveFolderName ?? "Unknown folder";
@@ -66,6 +70,15 @@ export function TaskCard({ task }: { task: Task }) {
     setControlBusy(true);
     try {
       upsertTask(task.status === "paused" ? await resumeTask(task.id) : await pauseTask(task.id));
+    } finally {
+      setControlBusy(false);
+    }
+  }
+
+  async function retry() {
+    setControlBusy(true);
+    try {
+      upsertTask(await retryTask(task.id));
     } finally {
       setControlBusy(false);
     }
@@ -149,11 +162,17 @@ export function TaskCard({ task }: { task: Task }) {
               {task.retryCount > 0 ? (
                 <span className="flex items-center gap-1"><RotateCcw className="size-3" /> Retry {task.retryCount}</span>
               ) : null}
-              {task.errorMessage ? <span className="truncate text-red-600 dark:text-red-300">{task.errorMessage}</span> : null}
+              {task.status === "waiting_for_network" ? (
+                <span className="truncate text-amber-700 dark:text-amber-300" title={task.errorMessage}>
+                  Resumes automatically when the connection returns
+                </span>
+              ) : task.errorMessage ? (
+                <span className="truncate text-red-600 dark:text-red-300">{task.errorMessage}</span>
+              ) : null}
             </div>
             <span className="ml-3 shrink-0">{formatRelativeTime(task.updatedAt)}</span>
           </div>
-          {(canTogglePause || task.driveWebViewLink) ? (
+          {(canTogglePause || canRetry || task.driveWebViewLink) ? (
             <div className="mt-3 flex justify-end gap-2 border-t border-border/60 pt-3">
               {task.driveWebViewLink ? (
                 <Button variant="outline" size="sm" className="h-7" onClick={copyShareLink}>
@@ -164,6 +183,11 @@ export function TaskCard({ task }: { task: Task }) {
                 <Button variant="outline" size="sm" className="h-7" disabled={controlBusy} onClick={togglePause}>
                   {task.status === "paused" ? <Play className="size-3" /> : <Pause className="size-3" />}
                   {task.status === "paused" ? "Resume" : "Pause"}
+                </Button>
+              ) : null}
+              {canRetry ? (
+                <Button variant="outline" size="sm" className="h-7" disabled={controlBusy} onClick={retry}>
+                  <RotateCcw className="size-3" /> Retry
                 </Button>
               ) : null}
             </div>

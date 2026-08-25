@@ -1,8 +1,9 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use oauth2::{
-    basic::BasicClient, AuthUrl, AuthorizationCode, ClientId, ClientSecret, CsrfToken,
-    PkceCodeChallenge, RedirectUrl, RefreshToken, Scope, TokenResponse, TokenUrl,
+    basic::{BasicClient, BasicErrorResponse},
+    AuthUrl, AuthorizationCode, ClientId, ClientSecret, CsrfToken, PkceCodeChallenge, RedirectUrl,
+    RefreshToken, RequestTokenError, Scope, TokenResponse, TokenUrl,
 };
 use serde::Serialize;
 use thiserror::Error;
@@ -69,6 +70,10 @@ pub enum OAuthError {
     StateMismatch,
     #[error("token exchange failed: {0}")]
     TokenExchange(String),
+    #[error("token endpoint request failed: {0}")]
+    TokenTransport(String),
+    #[error("token endpoint is temporarily unavailable: {0}")]
+    TokenTemporary(String),
     #[error("Google did not return a refresh token; revoke access and try connecting again")]
     MissingRefreshToken,
     #[error(transparent)]
@@ -113,7 +118,7 @@ pub async fn login(
         .set_pkce_verifier(verifier)
         .request_async(http)
         .await
-        .map_err(|error| OAuthError::TokenExchange(error.to_string()))?;
+        .map_err(map_token_exchange_error)?;
 
     let refresh_token = response
         .refresh_token()
@@ -174,7 +179,7 @@ async fn refresh_access_token(
         .exchange_refresh_token(&RefreshToken::new(previous.refresh_token.clone()))
         .request_async(http)
         .await
-        .map_err(|error| OAuthError::TokenExchange(error.to_string()))?;
+        .map_err(map_token_exchange_error)?;
 
     let access_token = response.access_token().secret().to_owned();
     let refreshed = StoredToken {
@@ -196,6 +201,35 @@ async fn refresh_access_token(
     };
     store.save(&refreshed)?;
     Ok(access_token)
+}
+
+fn map_token_exchange_error<RE>(error: RequestTokenError<RE, BasicErrorResponse>) -> OAuthError
+where
+    RE: std::error::Error + 'static,
+{
+    match error {
+        RequestTokenError::Request(error) => OAuthError::TokenTransport(error.to_string()),
+        RequestTokenError::ServerResponse(response) => {
+            let message = response.to_string();
+            if is_transient_token_error_code(response.error().as_ref()) {
+                OAuthError::TokenTemporary(message)
+            } else {
+                OAuthError::TokenExchange(message)
+            }
+        }
+        // oauth2 does not retain the HTTP status for these variants. Google can
+        // return an HTML/empty 429 or 5xx response, so keep the task recoverable
+        // instead of turning a temporary endpoint failure into a terminal task.
+        RequestTokenError::Parse(error, _) => OAuthError::TokenTemporary(error.to_string()),
+        RequestTokenError::Other(message) => OAuthError::TokenTemporary(message),
+    }
+}
+
+fn is_transient_token_error_code(code: &str) -> bool {
+    matches!(
+        code,
+        "temporarily_unavailable" | "server_error" | "rate_limit_exceeded" | "slow_down"
+    )
 }
 
 fn read_required_env(name: &'static str) -> Result<String, OAuthError> {
@@ -321,5 +355,19 @@ mod tests {
             result,
             Err(OAuthError::AuthorizationRejected(message)) if message == "access_denied"
         ));
+    }
+
+    #[test]
+    fn token_endpoint_temporary_codes_are_recoverable() {
+        for code in [
+            "temporarily_unavailable",
+            "server_error",
+            "rate_limit_exceeded",
+            "slow_down",
+        ] {
+            assert!(is_transient_token_error_code(code));
+        }
+        assert!(!is_transient_token_error_code("invalid_grant"));
+        assert!(!is_transient_token_error_code("invalid_client"));
     }
 }

@@ -45,7 +45,7 @@ impl GoogleService {
         existing_session_uri: Option<&str>,
         pause_gate: std::sync::Arc<crate::task_engine::PauseGate>,
         on_event: std::sync::Arc<dyn Fn(drive::UploadEvent) + Send + Sync>,
-    ) -> Result<DriveFile, String> {
+    ) -> Result<DriveFile, DriveError> {
         drive::upload_file_resumable(
             &self.http,
             &self.token_store,
@@ -60,7 +60,6 @@ impl GoogleService {
             self.bandwidth.clone(),
         )
         .await
-        .map_err(|error| error.to_string())
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -73,7 +72,7 @@ impl GoogleService {
         existing_session_uri: Option<&str>,
         pause_gate: std::sync::Arc<crate::task_engine::PauseGate>,
         on_event: std::sync::Arc<dyn Fn(drive::UploadEvent) + Send + Sync>,
-    ) -> Result<DriveFile, String> {
+    ) -> Result<DriveFile, DriveError> {
         drive::upload_file_resumable(
             &self.http,
             &self.token_store,
@@ -88,19 +87,14 @@ impl GoogleService {
             self.bandwidth.clone(),
         )
         .await
-        .map_err(|error| error.to_string())
     }
 
-    pub(crate) async fn make_file_public(&self, file_id: &str) -> Result<(), String> {
-        drive::make_file_public(&self.http, &self.token_store, &self.refresh_lock, file_id)
-            .await
-            .map_err(|error| error.to_string())
+    pub(crate) async fn make_file_public(&self, file_id: &str) -> Result<(), DriveError> {
+        drive::make_file_public(&self.http, &self.token_store, &self.refresh_lock, file_id).await
     }
 
-    pub(crate) async fn metadata(&self, file_id: String) -> Result<DriveFile, String> {
-        drive::get_metadata(&self.http, &self.token_store, &self.refresh_lock, file_id)
-            .await
-            .map_err(|error| error.to_string())
+    pub(crate) async fn metadata(&self, file_id: String) -> Result<DriveFile, DriveError> {
+        drive::get_metadata(&self.http, &self.token_store, &self.refresh_lock, file_id).await
     }
 
     pub(crate) async fn download_file(
@@ -111,7 +105,7 @@ impl GoogleService {
         resume_existing: bool,
         pause_gate: std::sync::Arc<crate::task_engine::PauseGate>,
         on_event: std::sync::Arc<dyn Fn(drive::DownloadEvent) + Send + Sync>,
-    ) -> Result<(), String> {
+    ) -> Result<(), DriveError> {
         drive::download_file(
             &self.http,
             &self.token_store,
@@ -125,11 +119,24 @@ impl GoogleService {
             self.bandwidth.clone(),
         )
         .await
-        .map_err(|error| error.to_string())
+    }
+
+    pub(crate) async fn connectivity_available(&self) -> bool {
+        matches!(
+            tokio::time::timeout(
+                Duration::from_secs(5),
+                self.http
+                    .get("https://www.googleapis.com/discovery/v1/apis/drive/v3/rest")
+                    .send(),
+            )
+            .await,
+            Ok(Ok(response)) if response.status().is_success()
+        )
     }
 }
 
 pub(crate) use drive::DownloadEvent;
+pub(crate) use drive::DriveError;
 pub(crate) use drive::UploadEvent;
 pub(crate) use link::parse_drive_file_id;
 

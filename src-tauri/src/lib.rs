@@ -44,7 +44,8 @@ pub fn run() {
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 task_engine::recover_unfinished_tasks(handle.clone()).await;
-                watcher::restore_enabled_watchers(handle).await;
+                watcher::restore_enabled_watchers(handle.clone()).await;
+                task_engine::monitor_waiting_tasks(handle).await;
             });
             Ok(())
         })
@@ -69,6 +70,7 @@ pub fn run() {
             task_engine::start_download_extract,
             task_engine::pause_task,
             task_engine::resume_task,
+            task_engine::retry_task,
             watcher::list_watchers,
             watcher::create_watcher,
             watcher::stop_watcher,

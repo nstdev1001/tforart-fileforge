@@ -1,4 +1,4 @@
-import { AlertCircle, CheckCircle2, Clock3, FileClock, History, LoaderCircle } from "lucide-react";
+import { AlertCircle, CheckCircle2, Clock3, FileClock, History, LoaderCircle, WifiOff } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
 import { Badge } from "@/components/ui/badge";
@@ -110,7 +110,19 @@ export function HistoryPage() {
             <CardTitle className="truncate">{selectedTask?.name ?? "Task log"}</CardTitle>
             <CardDescription className="mt-1 truncate">{selectedTask?.sourcePath}</CardDescription>
           </div>
-          {selectedTask ? <Badge variant={selectedTask.status === "completed" ? "success" : selectedTask.status === "failed" ? "danger" : "info"}>{taskStatusLabel[selectedTask.status]}</Badge> : null}
+          {selectedTask ? (
+            <Badge
+              variant={selectedTask.status === "completed"
+                ? "success"
+                : selectedTask.status === "failed"
+                  ? "danger"
+                  : selectedTask.status === "waiting_for_network"
+                    ? "warning"
+                    : "info"}
+            >
+              {taskStatusLabel[selectedTask.status]}
+            </Badge>
+          ) : null}
         </CardHeader>
         <CardContent className="p-5">
           {selectedWatcher ? (
@@ -161,7 +173,20 @@ export function HistoryPage() {
             </ol>
           ) : (
             <div className="grid min-h-52 place-items-center text-center text-muted-foreground">
-              <div>{selectedTask?.status === "failed" ? <AlertCircle className="mx-auto size-7" /> : selectedTask?.status === "completed" ? <CheckCircle2 className="mx-auto size-7" /> : <Clock3 className="mx-auto size-7" />}<p className="mt-2 text-xs">No detailed log entries for this task.</p></div>
+              <div>
+                {selectedTask?.status === "failed"
+                  ? <AlertCircle className="mx-auto size-7" />
+                  : selectedTask?.status === "completed"
+                    ? <CheckCircle2 className="mx-auto size-7" />
+                    : selectedTask?.status === "waiting_for_network"
+                      ? <WifiOff className="mx-auto size-7" />
+                      : <Clock3 className="mx-auto size-7" />}
+                <p className="mt-2 text-xs">
+                  {selectedTask?.status === "waiting_for_network"
+                    ? "This task will resume automatically when the connection returns."
+                    : "No detailed log entries for this task."}
+                </p>
+              </div>
             </div>
           )}
         </CardContent>

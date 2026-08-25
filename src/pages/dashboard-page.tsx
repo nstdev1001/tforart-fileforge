@@ -37,7 +37,11 @@ export function DashboardPage() {
 
   const counts = useMemo(
     () => ({
-      active: tasks.filter((task) => task.status === "running" || task.status === "paused").length,
+      active: tasks.filter((task) =>
+        task.status === "running"
+        || task.status === "paused"
+        || task.status === "waiting_for_network"
+      ).length,
       queued: tasks.filter((task) => task.status === "queued").length,
       completed: tasks.filter((task) => task.status === "completed").length,
     }),

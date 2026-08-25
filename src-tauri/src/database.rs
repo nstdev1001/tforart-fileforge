@@ -11,7 +11,7 @@ use tauri::{AppHandle, Manager, Runtime};
 use thiserror::Error;
 
 const DATABASE_FILE: &str = "fileforge.db";
-const LATEST_SCHEMA_VERSION: i64 = 7;
+const LATEST_SCHEMA_VERSION: i64 = 8;
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -116,6 +116,10 @@ pub enum DatabaseError {
     Sqlite(#[from] rusqlite::Error),
     #[error("database lock is poisoned")]
     Poisoned,
+    #[error("task '{0}' is not in a state that can be claimed")]
+    TaskNotClaimable(String),
+    #[error("watcher '{0}' is not watching and cannot enter draining")]
+    WatcherNotDrainable(String),
 }
 
 impl Database {
@@ -367,7 +371,8 @@ impl Database {
                         files_detected,
                         (SELECT COUNT(*) FROM tasks
                          WHERE watcher_id = watchers.id
-                           AND status = 'running' AND stage = 'uploading'),
+                           AND status IN ('running', 'waiting_for_network')
+                           AND stage = 'uploading'),
                         files_uploaded, files_failed, error_message,
                         created_at, updated_at, drive_folder_name
                  FROM watchers WHERE local_path = ?1",
@@ -387,7 +392,8 @@ impl Database {
                     files_detected,
                     (SELECT COUNT(*) FROM tasks
                      WHERE watcher_id = watchers.id
-                       AND status = 'running' AND stage = 'uploading'),
+                       AND status IN ('running', 'waiting_for_network')
+                       AND stage = 'uploading'),
                     files_uploaded, files_failed, error_message,
                     created_at, updated_at, drive_folder_name
              FROM watchers ORDER BY created_at DESC",
@@ -406,7 +412,8 @@ impl Database {
                     files_detected,
                     (SELECT COUNT(*) FROM tasks
                      WHERE watcher_id = watchers.id
-                       AND status = 'running' AND stage = 'uploading'),
+                       AND status IN ('running', 'waiting_for_network')
+                       AND stage = 'uploading'),
                     files_uploaded, files_failed, error_message,
                     created_at, updated_at, drive_folder_name
              FROM watchers WHERE enabled = 1 ORDER BY created_at ASC",
@@ -456,6 +463,20 @@ impl Database {
         Ok(())
     }
 
+    pub fn mark_watcher_draining(&self, id: &str) -> Result<(), DatabaseError> {
+        let connection = self.lock()?;
+        let changed = connection.execute(
+            "UPDATE watchers SET status = 'draining',
+                    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+             WHERE id = ?1 AND enabled = 1 AND status = 'watching'",
+            [id],
+        )?;
+        if changed != 1 {
+            return Err(DatabaseError::WatcherNotDrainable(id.to_owned()));
+        }
+        Ok(())
+    }
+
     pub fn delete_watcher(&self, id: &str) -> Result<(), DatabaseError> {
         let connection = self.lock()?;
         connection.execute("DELETE FROM watchers WHERE id = ?1 AND enabled = 0", [id])?;
@@ -467,7 +488,8 @@ impl Database {
         connection
             .query_row(
                 "SELECT COUNT(*) FROM tasks
-                 WHERE watcher_id = ?1 AND status IN ('queued', 'running', 'paused')",
+                 WHERE watcher_id = ?1
+                   AND status IN ('queued', 'running', 'paused', 'waiting_for_network')",
                 [watcher_id],
                 |row| row.get(0),
             )
@@ -643,7 +665,7 @@ impl Database {
                     drive_file_id, drive_web_view_link, created_at, updated_at,
                     archive_path, resumable_session_uri, options_json, watcher_id
              FROM tasks
-             WHERE status IN ('queued', 'running', 'paused')
+             WHERE status IN ('queued', 'running', 'paused', 'waiting_for_network')
                AND task_type IN ('compress_upload', 'download_extract', 'watch_upload')
              ORDER BY created_at ASC",
         )?;
@@ -686,13 +708,55 @@ impl Database {
     pub fn mark_recovery_failed(&self, task_id: &str, message: &str) -> Result<(), DatabaseError> {
         let connection = self.lock()?;
         connection.execute(
-            "UPDATE tasks SET status = 'failed', stage = 'failed', error_message = ?2,
+            "UPDATE tasks SET status = 'failed', error_message = ?2,
                     speed_bytes_per_second = NULL, eta_seconds = NULL,
                     updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
              WHERE id = ?1",
             params![task_id, message],
         )?;
         Ok(())
+    }
+
+    pub fn claim_failed_task(&self, task_id: &str) -> Result<RecoverableTask, DatabaseError> {
+        self.claim_task(task_id, "failed", false)
+    }
+
+    pub fn claim_waiting_task(&self, task_id: &str) -> Result<RecoverableTask, DatabaseError> {
+        self.claim_task(task_id, "waiting_for_network", true)
+    }
+
+    fn claim_task(
+        &self,
+        task_id: &str,
+        expected_status: &str,
+        include_watch_uploads: bool,
+    ) -> Result<RecoverableTask, DatabaseError> {
+        let mut connection = self.lock()?;
+        let transaction = connection.transaction()?;
+        let changed = transaction.execute(
+            "UPDATE tasks SET status = 'queued', error_message = NULL,
+                    speed_bytes_per_second = NULL, eta_seconds = NULL,
+                    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+             WHERE id = ?1 AND status = ?2
+               AND task_type IN ('compress_upload', 'download_extract', 'watch_upload')
+               AND (?3 = 1 OR task_type != 'watch_upload')",
+            params![task_id, expected_status, u8::from(include_watch_uploads)],
+        )?;
+        if changed != 1 {
+            return Err(DatabaseError::TaskNotClaimable(task_id.to_owned()));
+        }
+        let task = transaction.query_row(
+            "SELECT id, name, task_type, status, stage, COALESCE(source_path, ''),
+                    destination_path, progress, bytes_processed, bytes_total,
+                    speed_bytes_per_second, eta_seconds, retry_count, error_message,
+                    drive_file_id, drive_web_view_link, created_at, updated_at,
+                    archive_path, resumable_session_uri, options_json, watcher_id
+             FROM tasks WHERE id = ?1",
+            [task_id],
+            recoverable_task_from_row,
+        )?;
+        transaction.commit()?;
+        Ok(task)
     }
 
     #[allow(dead_code)]
@@ -775,8 +839,43 @@ fn apply_migrations(connection: &mut Connection) -> Result<(), rusqlite::Error> 
         transaction.commit()?;
     }
 
+    let current_version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if current_version < 8 {
+        // foreign_keys cannot be toggled while a transaction is active. Keep
+        // the existing logs table in place while rebuilding tasks, then verify
+        // every retained reference before accepting the migration.
+        connection.pragma_update(None, "foreign_keys", "OFF")?;
+        let migration_result = (|| -> Result<(), rusqlite::Error> {
+            let transaction = connection.transaction()?;
+            transaction
+                .execute_batch(include_str!("../migrations/0008_waiting_for_network.sql"))?;
+            let violation: Option<i64> = transaction
+                .query_row("PRAGMA foreign_key_check", [], |_| Ok(1_i64))
+                .optional()?;
+            if violation.is_some() {
+                return Err(rusqlite::Error::InvalidQuery);
+            }
+            transaction.pragma_update(None, "user_version", 8)?;
+            transaction.commit()?;
+            Ok(())
+        })();
+        let foreign_keys_result = connection.pragma_update(None, "foreign_keys", "ON");
+        migration_result?;
+        foreign_keys_result?;
+    }
+
     let final_version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
     if final_version != LATEST_SCHEMA_VERSION {
+        return Err(rusqlite::Error::InvalidQuery);
+    }
+
+    // Validate on every open as well as inside the v8 migration transaction.
+    // This catches databases that were externally modified with FK enforcement
+    // disabled and avoids treating a previously committed corrupt v8 as valid.
+    let violation: Option<i64> = connection
+        .query_row("PRAGMA foreign_key_check", [], |_| Ok(1_i64))
+        .optional()?;
+    if violation.is_some() {
         return Err(rusqlite::Error::InvalidQuery);
     }
 
@@ -806,6 +905,18 @@ fn task_record_from_row(
         drive_web_view_link: row.get(15)?,
         created_at: row.get(16)?,
         updated_at: row.get(17)?,
+    })
+}
+
+fn recoverable_task_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RecoverableTask> {
+    let task_type: String = row.get(2)?;
+    Ok(RecoverableTask {
+        record: task_record_from_row(row, task_type.clone())?,
+        task_type,
+        archive_path: row.get(18)?,
+        resumable_session_uri: row.get(19)?,
+        options_json: row.get(20)?,
+        watcher_id: row.get(21)?,
     })
 }
 
@@ -936,6 +1047,228 @@ mod tests {
             [],
         );
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn migration_v8_preserves_tasks_logs_and_foreign_keys() {
+        let mut connection = Connection::open_in_memory().expect("in-memory SQLite");
+        configure_connection(&connection).expect("configure SQLite");
+        for (version, migration) in [
+            (1, include_str!("../migrations/0001_initial.sql")),
+            (2, include_str!("../migrations/0002_task_workflow.sql")),
+            (3, include_str!("../migrations/0003_task_recovery.sql")),
+            (4, include_str!("../migrations/0004_watch_automation.sql")),
+            (5, include_str!("../migrations/0005_desktop_experience.sql")),
+            (6, include_str!("../migrations/0006_bandwidth_mode.sql")),
+            (
+                7,
+                include_str!("../migrations/0007_watcher_drive_folder_name.sql"),
+            ),
+        ] {
+            connection
+                .execute_batch(migration)
+                .expect("apply legacy migration");
+            connection
+                .pragma_update(None, "user_version", version)
+                .expect("advance legacy schema version");
+        }
+        connection
+            .execute(
+                "INSERT INTO tasks (
+                   id, name, task_type, status, stage, source_path,
+                   archive_path, resumable_session_uri, options_json
+                 ) VALUES (
+                   'legacy-task', 'Legacy upload', 'compress_upload', 'failed',
+                   'uploading', 'C:\\source', 'C:\\cache\\archive.zip',
+                   'https://upload.test/session', '{}'
+                 )",
+                [],
+            )
+            .expect("insert legacy task");
+        connection
+            .execute(
+                "INSERT INTO logs (task_id, level, event, message)
+                 VALUES ('legacy-task', 'warn', 'upload.retry', 'temporary outage')",
+                [],
+            )
+            .expect("insert legacy log");
+
+        apply_migrations(&mut connection).expect("upgrade legacy schema");
+
+        let retained: (String, String, String) = connection
+            .query_row(
+                "SELECT stage, archive_path, resumable_session_uri
+                 FROM tasks WHERE id = 'legacy-task'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("retained task");
+        assert_eq!(retained.0, "uploading");
+        assert_eq!(retained.1, "C:\\cache\\archive.zip");
+        assert_eq!(retained.2, "https://upload.test/session");
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM logs WHERE task_id = 'legacy-task'",
+                    [],
+                    |row| row.get::<_, u64>(0),
+                )
+                .expect("retained logs"),
+            1
+        );
+        connection
+            .execute(
+                "UPDATE tasks SET status = 'waiting_for_network'
+                 WHERE id = 'legacy-task'",
+                [],
+            )
+            .expect("new status accepted");
+        let violation: Option<i64> = connection
+            .query_row("PRAGMA foreign_key_check", [], |_| Ok(1_i64))
+            .optional()
+            .expect("foreign key check");
+        assert!(violation.is_none());
+        connection
+            .execute("DELETE FROM tasks WHERE id = 'legacy-task'", [])
+            .expect("delete migrated task");
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM logs", [], |row| row.get::<_, u64>(0))
+                .expect("cascade retained"),
+            0
+        );
+    }
+
+    #[test]
+    fn existing_v8_database_is_rejected_when_foreign_keys_are_corrupt() {
+        let mut connection = Connection::open_in_memory().expect("in-memory SQLite");
+        configure_connection(&connection).expect("configure SQLite");
+        apply_migrations(&mut connection).expect("create current schema");
+
+        connection
+            .pragma_update(None, "foreign_keys", "OFF")
+            .expect("disable FK enforcement for corruption fixture");
+        connection
+            .execute(
+                "INSERT INTO logs (task_id, level, event, message)
+                 VALUES ('missing-task', 'error', 'fixture.corrupt', 'orphan log')",
+                [],
+            )
+            .expect("insert orphan log");
+        connection
+            .pragma_update(None, "foreign_keys", "ON")
+            .expect("restore FK enforcement");
+
+        assert!(apply_migrations(&mut connection).is_err());
+    }
+
+    #[test]
+    fn failed_and_waiting_tasks_are_claimed_once_without_losing_resume_state() {
+        let directory = tempfile::tempdir().expect("temporary database directory");
+        let database = Database::open(directory.path().join("claims.db")).expect("database");
+        database
+            .create_compress_upload_task(
+                "claim-me",
+                "Retry upload",
+                "C:\\source",
+                "root",
+                42,
+                r#"{"sourcePath":"C:\\source","driveFolderId":"root","archiveName":"sample.zip","makePublic":true}"#,
+            )
+            .expect("create task");
+        {
+            let connection = database.connection().expect("connection");
+            connection
+                .execute(
+                    "UPDATE tasks SET status = 'failed', stage = 'uploading',
+                     archive_path = 'C:\\cache\\sample.zip',
+                     resumable_session_uri = 'https://upload.test/session',
+                     error_message = 'offline'
+                     WHERE id = 'claim-me'",
+                    [],
+                )
+                .expect("prepare failed task");
+        }
+
+        let claimed = database
+            .claim_failed_task("claim-me")
+            .expect("claim failed task");
+        assert_eq!(claimed.record.status, "queued");
+        assert_eq!(claimed.record.stage, "uploading");
+        assert_eq!(
+            claimed.resumable_session_uri.as_deref(),
+            Some("https://upload.test/session")
+        );
+        assert!(matches!(
+            database.claim_failed_task("claim-me"),
+            Err(DatabaseError::TaskNotClaimable(_))
+        ));
+
+        {
+            let connection = database.connection().expect("connection");
+            connection
+                .execute(
+                    "UPDATE tasks SET status = 'waiting_for_network'
+                     WHERE id = 'claim-me'",
+                    [],
+                )
+                .expect("park task");
+        }
+        let waiting = database
+            .list_recoverable_tasks()
+            .expect("list waiting task");
+        assert_eq!(waiting[0].record.status, "waiting_for_network");
+        let resumed = database
+            .claim_waiting_task("claim-me")
+            .expect("claim waiting task");
+        assert_eq!(resumed.record.status, "queued");
+        assert_eq!(resumed.record.stage, "uploading");
+        database
+            .mark_recovery_failed("claim-me", "local validation failed")
+            .expect("mark recovery failed");
+        let failed = database.list_tasks().expect("failed task");
+        assert_eq!(failed[0].status, "failed");
+        assert_eq!(failed[0].stage, "uploading");
+    }
+
+    #[test]
+    fn watcher_children_can_auto_resume_but_cannot_be_manually_retried() {
+        let directory = tempfile::tempdir().expect("temporary database directory");
+        let database = Database::open(directory.path().join("watch-claims.db")).expect("database");
+        {
+            let connection = database.connection().expect("connection");
+            connection
+                .execute(
+                    "INSERT INTO tasks (
+                       id, name, task_type, status, stage, source_path
+                     ) VALUES (
+                       'watch-child', 'Watched upload', 'watch_upload',
+                       'failed', 'uploading', 'C:\\renders\\frame.jpg'
+                     )",
+                    [],
+                )
+                .expect("insert failed watcher child");
+        }
+
+        assert!(matches!(
+            database.claim_failed_task("watch-child"),
+            Err(DatabaseError::TaskNotClaimable(_))
+        ));
+        {
+            let connection = database.connection().expect("connection");
+            connection
+                .execute(
+                    "UPDATE tasks SET status = 'waiting_for_network'
+                     WHERE id = 'watch-child'",
+                    [],
+                )
+                .expect("park watcher child");
+        }
+        let resumed = database
+            .claim_waiting_task("watch-child")
+            .expect("auto-resume watcher child");
+        assert_eq!(resumed.record.status, "queued");
+        assert_eq!(resumed.record.stage, "uploading");
     }
 
     #[test]
@@ -1097,6 +1430,38 @@ mod tests {
         assert_eq!(
             watchers[0].drive_web_view_link.as_deref(),
             Some("https://drive.google.com/folder")
+        );
+
+        database
+            .mark_watcher_draining("watcher-one")
+            .expect("transition watcher to draining");
+        let draining = database.list_watchers().expect("draining watcher");
+        assert_eq!(draining[0].status, "draining");
+        assert_eq!(draining[0].files_detected, 1);
+        assert_eq!(
+            draining[0].error_message.as_deref(),
+            Some("earlier warning")
+        );
+
+        {
+            let connection = database.connection().expect("connection");
+            connection
+                .execute(
+                    "UPDATE tasks SET status = 'waiting_for_network'
+                     WHERE id = 'watch-task'",
+                    [],
+                )
+                .expect("park child upload for network");
+        }
+        assert_eq!(
+            database.list_watchers().expect("network-waiting watcher")[0].files_uploading,
+            1
+        );
+        assert_eq!(
+            database
+                .count_active_watch_uploads("watcher-one")
+                .expect("network-waiting upload remains active"),
+            1
         );
 
         {

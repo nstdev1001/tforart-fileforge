@@ -16,13 +16,15 @@ use uuid::Uuid;
 use crate::{
     database::{Database, LogRecord, RecoverableTask, TaskRecord, TaskUpdate},
     desktop,
-    google::{parse_drive_file_id, DownloadEvent, GoogleService, UploadEvent},
+    google::{parse_drive_file_id, DownloadEvent, DriveError, GoogleService, UploadEvent},
     seven_zip,
 };
 
 const TEMP_SPACE_SAFETY_BYTES: u64 = 64 * 1024 * 1024;
 const MIN_CONCURRENCY: usize = 1;
 const MAX_CONCURRENCY: usize = 10;
+const NETWORK_RECHECK_INITIAL: Duration = Duration::from_secs(5);
+const NETWORK_RECHECK_MAX: Duration = Duration::from_secs(30);
 
 pub struct PauseGate {
     paused: AtomicBool,
@@ -85,6 +87,7 @@ pub struct TaskEngine {
     controls: RwLock<HashMap<String, Arc<TaskControl>>>,
     pool: Arc<WorkerPool>,
     globally_paused: AtomicBool,
+    network_waiters_changed: Notify,
 }
 
 impl TaskEngine {
@@ -93,6 +96,53 @@ impl TaskEngine {
             controls: RwLock::new(HashMap::new()),
             pool: Arc::new(WorkerPool::new(limit)),
             globally_paused: AtomicBool::new(false),
+            network_waiters_changed: Notify::new(),
+        }
+    }
+}
+
+#[derive(Debug)]
+enum WorkflowError {
+    TransientNetwork(String),
+    Fatal(String),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum NetworkParkState {
+    Waiting,
+    Paused,
+}
+
+impl WorkflowError {
+    fn message(&self) -> &str {
+        match self {
+            Self::TransientNetwork(message) | Self::Fatal(message) => message,
+        }
+    }
+
+    fn is_transient_network(&self) -> bool {
+        matches!(self, Self::TransientNetwork(_))
+    }
+}
+
+impl From<String> for WorkflowError {
+    fn from(error: String) -> Self {
+        Self::Fatal(error)
+    }
+}
+
+impl From<&str> for WorkflowError {
+    fn from(error: &str) -> Self {
+        Self::Fatal(error.to_owned())
+    }
+}
+
+impl From<DriveError> for WorkflowError {
+    fn from(error: DriveError) -> Self {
+        if error.is_transient_network() {
+            Self::TransientNetwork(error.to_string())
+        } else {
+            Self::Fatal(error.to_string())
         }
     }
 }
@@ -352,7 +402,10 @@ pub async fn start_download_extract(
 ) -> Result<TaskRecord, String> {
     let file_id =
         parse_drive_file_id(&request.drive_link_or_id).map_err(|error| error.to_string())?;
-    let metadata = google.metadata(file_id.clone()).await?;
+    let metadata = google
+        .metadata(file_id.clone())
+        .await
+        .map_err(|error| error.to_string())?;
     let is_zip = metadata.mime_type.eq_ignore_ascii_case("application/zip")
         || metadata.name.to_ascii_lowercase().ends_with(".zip");
     if !is_zip {
@@ -467,9 +520,10 @@ pub async fn start_download_extract(
             download_path,
             extraction_destination,
             seven_zip_path,
-            compressed_bytes,
+            compressed_bytes: Some(compressed_bytes),
             recovery_stage: None,
             resume_existing: false,
+            verify_download_artifact: false,
         },
         engine.pool.clone(),
     ));
@@ -585,9 +639,9 @@ pub async fn pause_task(
         if !matches!(runtime.record.status.as_str(), "queued" | "running") {
             return Err("task is not currently running".to_owned());
         }
+        control.gate.pause();
         runtime.record.status = "paused".to_owned();
     }
-    control.gate.pause();
     publish(&app, &control.runtime)?;
     emit_watcher_for_task(&app, &task_id);
     database
@@ -633,6 +687,51 @@ pub async fn resume_task(
     snapshot(&control.runtime)
 }
 
+#[tauri::command]
+pub async fn retry_task(
+    task_id: String,
+    app: AppHandle,
+    database: State<'_, Database>,
+    engine: State<'_, TaskEngine>,
+) -> Result<TaskRecord, String> {
+    if engine.controls.read().await.contains_key(&task_id) {
+        return Err("task is still active".to_owned());
+    }
+
+    let task = database
+        .claim_failed_task(&task_id)
+        .map_err(|error| error.to_string())?;
+    let task_name = task.record.name.clone();
+    let watcher_id = task.watcher_id.clone();
+    let is_watch_upload = task.task_type == "watch_upload";
+    let _ = database.append_log(
+        &task_id,
+        "info",
+        "task.retry_requested",
+        "Failed task was queued for retry",
+    );
+
+    if let Err(error) = recover_task(&app, task).await {
+        handle_recovery_failure(
+            &app,
+            &task_id,
+            &task_name,
+            watcher_id.as_deref(),
+            is_watch_upload,
+            &error,
+        )
+        .await;
+        return Err(error);
+    }
+
+    database
+        .list_tasks()
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .find(|record| record.id == task_id)
+        .ok_or_else(|| "retried task could not be loaded".to_owned())
+}
+
 pub async fn pause_all(app: &AppHandle) -> usize {
     app.state::<TaskEngine>()
         .globally_paused
@@ -652,6 +751,7 @@ pub async fn pause_all(app: &AppHandle) -> usize {
         }
         let task_id = if let Ok(mut runtime) = control.runtime.lock() {
             if matches!(runtime.record.status.as_str(), "queued" | "running") {
+                control.gate.pause();
                 runtime.record.status = "paused".to_owned();
                 Some(runtime.record.id.clone())
             } else {
@@ -663,7 +763,6 @@ pub async fn pause_all(app: &AppHandle) -> usize {
         let Some(task_id) = task_id else {
             continue;
         };
-        control.gate.pause();
         if publish(app, &control.runtime).is_ok() {
             changed += 1;
         }
@@ -679,9 +778,9 @@ pub async fn pause_all(app: &AppHandle) -> usize {
 }
 
 pub async fn resume_all(app: &AppHandle) -> usize {
-    app.state::<TaskEngine>()
-        .globally_paused
-        .store(false, Ordering::SeqCst);
+    let engine = app.state::<TaskEngine>();
+    engine.globally_paused.store(false, Ordering::SeqCst);
+    engine.network_waiters_changed.notify_one();
     let controls: Vec<Arc<TaskControl>> = app
         .state::<TaskEngine>()
         .controls
@@ -737,70 +836,214 @@ pub async fn recover_unfinished_tasks(app: AppHandle) {
     };
 
     for task in tasks {
+        // Waiting tasks are intentionally left parked without a runtime
+        // control or worker permit. The shared connectivity monitor claims
+        // them only after Google is reachable again.
+        if task.record.status == "waiting_for_network" {
+            continue;
+        }
         let task_id = task.record.id.clone();
         let task_name = task.record.name.clone();
         let watcher_id = task.watcher_id.clone();
         let is_watch_upload = task.task_type == "watch_upload";
         if let Err(error) = recover_task(&app, task).await {
-            let _ = app
-                .state::<TaskEngine>()
-                .controls
-                .write()
-                .await
-                .remove(&task_id);
-            if is_watch_upload {
-                finish_watcher_file(
-                    &app,
-                    &task_id,
-                    watcher_id.as_deref().unwrap_or_default(),
-                    false,
-                    Some(&error),
-                );
-            } else {
-                let _ = app
-                    .state::<Database>()
-                    .mark_recovery_failed(&task_id, &error);
-                let _ = app.state::<Database>().append_log(
-                    &task_id,
-                    "error",
-                    "recovery.failed",
-                    &error,
-                );
-                if let Ok(tasks) = app.state::<Database>().list_tasks() {
-                    if let Some(record) = tasks.into_iter().find(|record| record.id == task_id) {
-                        let _ = app.emit("task-progress", record);
-                    }
-                }
-                desktop::notify_task_result(&app, &task_name, false, Some(&error));
-            }
-            eprintln!("FileForge could not recover task {task_id}: {error}");
+            handle_recovery_failure(
+                &app,
+                &task_id,
+                &task_name,
+                watcher_id.as_deref(),
+                is_watch_upload,
+                &error,
+            )
+            .await;
         }
     }
 }
 
+pub async fn monitor_waiting_tasks(app: AppHandle) {
+    let mut delay = NETWORK_RECHECK_INITIAL;
+    loop {
+        let waiting = match app.state::<Database>().list_recoverable_tasks() {
+            Ok(tasks) => tasks
+                .into_iter()
+                .filter(|task| task.record.status == "waiting_for_network")
+                .collect::<Vec<_>>(),
+            Err(error) => {
+                eprintln!("FileForge network recovery could not load tasks: {error}");
+                tokio::time::sleep(delay).await;
+                delay = next_network_recheck(delay);
+                continue;
+            }
+        };
+
+        if waiting.is_empty() {
+            delay = NETWORK_RECHECK_INITIAL;
+            app.state::<TaskEngine>()
+                .network_waiters_changed
+                .notified()
+                .await;
+            continue;
+        }
+
+        if app
+            .state::<TaskEngine>()
+            .globally_paused
+            .load(Ordering::SeqCst)
+        {
+            app.state::<TaskEngine>()
+                .network_waiters_changed
+                .notified()
+                .await;
+            continue;
+        }
+
+        // Always honor the current delay while tasks are parked. In particular,
+        // a task that immediately receives another 429/5xx will notify this
+        // monitor when it parks again, but cannot bypass the service backoff.
+        tokio::time::sleep(delay).await;
+        if app
+            .state::<TaskEngine>()
+            .globally_paused
+            .load(Ordering::SeqCst)
+        {
+            continue;
+        }
+
+        if app.state::<GoogleService>().connectivity_available().await {
+            let waiting = match app.state::<Database>().list_recoverable_tasks() {
+                Ok(tasks) => tasks
+                    .into_iter()
+                    .filter(|task| task.record.status == "waiting_for_network")
+                    .collect::<Vec<_>>(),
+                Err(error) => {
+                    eprintln!("FileForge network recovery could not refresh tasks: {error}");
+                    delay = next_network_recheck(delay);
+                    continue;
+                }
+            };
+            for parked in waiting {
+                let task_id = parked.record.id;
+                if app
+                    .state::<TaskEngine>()
+                    .controls
+                    .read()
+                    .await
+                    .contains_key(&task_id)
+                {
+                    continue;
+                }
+                let task = match app.state::<Database>().claim_waiting_task(&task_id) {
+                    Ok(task) => task,
+                    Err(crate::database::DatabaseError::TaskNotClaimable(_)) => continue,
+                    Err(error) => {
+                        eprintln!("FileForge could not claim waiting task {task_id}: {error}");
+                        continue;
+                    }
+                };
+                let task_name = task.record.name.clone();
+                let watcher_id = task.watcher_id.clone();
+                let is_watch_upload = task.task_type == "watch_upload";
+                let _ = app.state::<Database>().append_log(
+                    &task_id,
+                    "info",
+                    "network.restored",
+                    "Network is reachable; task returned to the worker queue",
+                );
+                if let Err(error) = recover_task(&app, task).await {
+                    handle_recovery_failure(
+                        &app,
+                        &task_id,
+                        &task_name,
+                        watcher_id.as_deref(),
+                        is_watch_upload,
+                        &error,
+                    )
+                    .await;
+                }
+            }
+        }
+        delay = next_network_recheck(delay);
+    }
+}
+
+fn next_network_recheck(current: Duration) -> Duration {
+    (current * 2).min(NETWORK_RECHECK_MAX)
+}
+
+fn resumable_session_for_archive(
+    archive_ready: bool,
+    existing_session_uri: Option<&str>,
+) -> Option<&str> {
+    archive_ready.then_some(existing_session_uri).flatten()
+}
+
+fn archive_matches_expected(path: &Path, expected_bytes: u64) -> bool {
+    expected_bytes > 0
+        && std::fs::metadata(path)
+            .is_ok_and(|metadata| metadata.is_file() && metadata.len() == expected_bytes)
+}
+
+async fn handle_recovery_failure(
+    app: &AppHandle,
+    task_id: &str,
+    task_name: &str,
+    watcher_id: Option<&str>,
+    is_watch_upload: bool,
+    error: &str,
+) {
+    app.state::<TaskEngine>()
+        .controls
+        .write()
+        .await
+        .remove(task_id);
+    if is_watch_upload {
+        finish_watcher_file(
+            app,
+            task_id,
+            watcher_id.unwrap_or_default(),
+            false,
+            Some(error),
+        );
+    } else {
+        let _ = app.state::<Database>().mark_recovery_failed(task_id, error);
+        let _ = app
+            .state::<Database>()
+            .append_log(task_id, "error", "recovery.failed", error);
+        if let Ok(tasks) = app.state::<Database>().list_tasks() {
+            if let Some(record) = tasks.into_iter().find(|record| record.id == task_id) {
+                let _ = app.emit("task-progress", record);
+            }
+        }
+        desktop::notify_task_result(app, task_name, false, Some(error));
+    }
+    eprintln!("FileForge could not recover task {task_id}: {error}");
+}
+
 async fn recover_task(app: &AppHandle, task: RecoverableTask) -> Result<(), String> {
     let original_status = task.record.status.clone();
-    let original_stage = task.record.stage.clone();
+    let legacy_failed_stage = task.record.stage == "failed";
+    let original_stage = infer_recovery_stage(&task);
     let mut record = task.record;
-    if original_status != "paused" {
+    let should_pause = original_status == "paused"
+        || app
+            .state::<TaskEngine>()
+            .globally_paused
+            .load(Ordering::SeqCst);
+    if should_pause {
+        record.status = "paused".to_owned();
+    } else {
         record.status = "queued".to_owned();
     }
+    record.stage = original_stage.clone();
     record.speed_bytes_per_second = None;
     record.eta_seconds = None;
     record.error_message = None;
 
-    let gate = Arc::new(
-        if original_status == "paused"
-            || app
-                .state::<TaskEngine>()
-                .globally_paused
-                .load(Ordering::SeqCst)
-        {
-            PauseGate::new_paused()
-        } else {
-            PauseGate::new()
-        },
-    );
+    let gate = Arc::new(if should_pause {
+        PauseGate::new_paused()
+    } else {
+        PauseGate::new()
+    });
     let control = Arc::new(TaskControl {
         gate,
         runtime: Arc::new(StdMutex::new(TaskRuntime {
@@ -812,11 +1055,15 @@ async fn recover_task(app: &AppHandle, task: RecoverableTask) -> Result<(), Stri
 
     let pool = {
         let engine = app.state::<TaskEngine>();
-        engine
-            .controls
-            .write()
-            .await
-            .insert(record.id.clone(), control.clone());
+        let mut controls = engine.controls.write().await;
+        if controls.contains_key(&record.id) {
+            // Recovery may be requested concurrently by startup, reconnect,
+            // or a user action. The existing control already owns the task,
+            // so treating this as success keeps recovery idempotent and avoids
+            // removing a live worker in the caller's failure cleanup.
+            return Ok(());
+        }
+        controls.insert(record.id.clone(), control.clone());
         engine.pool.clone()
     };
     publish(app, &control.runtime)?;
@@ -858,7 +1105,7 @@ async fn recover_task(app: &AppHandle, task: RecoverableTask) -> Result<(), Stri
             };
             let can_resume_without_source =
                 (matches!(original_stage.as_str(), "uploading" | "sharing")
-                    && archive_path.is_file())
+                    && archive_matches_expected(&archive_path, record.bytes_total))
                     || (original_stage == "sharing" && record.drive_file_id.is_some());
             if !source.is_dir() && !can_resume_without_source {
                 return Err(
@@ -905,22 +1152,11 @@ async fn recover_task(app: &AppHandle, task: RecoverableTask) -> Result<(), Stri
                 .clone()
                 .or_else(|| parse_drive_file_id(&record.source_path).ok())
                 .ok_or_else(|| "recovered download has no valid Drive file ID".to_owned())?;
-            let metadata = app
-                .state::<GoogleService>()
-                .metadata(file_id.clone())
-                .await?;
-            let compressed_bytes = metadata
-                .size
-                .as_deref()
-                .ok_or_else(|| "Google Drive metadata does not include ZIP size".to_owned())?
-                .parse::<u64>()
-                .map_err(|_| "Google Drive returned an invalid ZIP size".to_owned())?;
             let extraction_destination = record
                 .destination_path
                 .as_deref()
                 .map(PathBuf::from)
                 .ok_or_else(|| "recovered download has no extraction destination".to_owned())?;
-            let safe_name = sanitize_archive_name(Some(&metadata.name), None);
             let download_path = match task.archive_path {
                 Some(path) => PathBuf::from(path),
                 None => app
@@ -928,7 +1164,7 @@ async fn recover_task(app: &AppHandle, task: RecoverableTask) -> Result<(), Stri
                     .app_cache_dir()
                     .map_err(|error| error.to_string())?
                     .join("downloads")
-                    .join(format!("{}-{safe_name}", record.id)),
+                    .join(format!("{}-download.zip", record.id)),
             };
             if let Some(parent) = download_path.parent() {
                 tokio::fs::create_dir_all(parent)
@@ -945,9 +1181,15 @@ async fn recover_task(app: &AppHandle, task: RecoverableTask) -> Result<(), Stri
                 download_path,
                 extraction_destination,
                 seven_zip_path,
-                compressed_bytes,
+                // A recovered task may have last persisted bytes_total from
+                // extraction rather than from the compressed Drive object.
+                // Resolve the authoritative compressed size inside the worker
+                // so an offline metadata lookup parks cleanly and remains safe
+                // across any number of reconnect attempts.
+                compressed_bytes: None,
                 recovery_stage: Some(original_stage),
                 resume_existing: true,
+                verify_download_artifact: legacy_failed_stage,
             };
             let task_id = record.id.clone();
             let app = app.clone();
@@ -1008,6 +1250,37 @@ async fn recover_task(app: &AppHandle, task: RecoverableTask) -> Result<(), Stri
     Ok(())
 }
 
+fn infer_recovery_stage(task: &RecoverableTask) -> String {
+    if task.record.stage == "completed" {
+        return match task.task_type.as_str() {
+            "compress_upload" if task.record.drive_file_id.is_some() => "sharing".to_owned(),
+            "download_extract" => "opening".to_owned(),
+            _ => "queued".to_owned(),
+        };
+    }
+
+    if task.record.stage != "failed" {
+        return task.record.stage.clone();
+    }
+
+    match task.task_type.as_str() {
+        "compress_upload" if task.record.drive_file_id.is_some() => "sharing".to_owned(),
+        "compress_upload"
+            if task.resumable_session_uri.is_some()
+                || task.archive_path.as_deref().is_some_and(|path| {
+                    std::fs::metadata(path).is_ok_and(|metadata| {
+                        task.record.bytes_total > 0 && metadata.len() == task.record.bytes_total
+                    })
+                }) =>
+        {
+            "uploading".to_owned()
+        }
+        "download_extract" if task.archive_path.is_some() => "downloading".to_owned(),
+        "watch_upload" => "uploading".to_owned(),
+        _ => "queued".to_owned(),
+    }
+}
+
 struct WorkflowRequest {
     source: PathBuf,
     archive_path: PathBuf,
@@ -1026,9 +1299,10 @@ struct DownloadWorkflowRequest {
     download_path: PathBuf,
     extraction_destination: PathBuf,
     seven_zip_path: PathBuf,
-    compressed_bytes: u64,
+    compressed_bytes: Option<u64>,
     recovery_stage: Option<String>,
     resume_existing: bool,
+    verify_download_artifact: bool,
 }
 
 struct WatchWorkflowRequest {
@@ -1047,37 +1321,42 @@ async fn run_workflow(
     request: WorkflowRequest,
     pool: Arc<WorkerPool>,
 ) {
-    let _permit = match wait_for_worker(&app, &task_id, &control, &pool).await {
+    let permit = match wait_for_worker(&app, &task_id, &control, &pool).await {
         Ok(permit) => permit,
         Err(error) => {
+            remove_control_if_same(&app, &task_id, &control).await;
             fail_task(&app, &task_id, &control, &error);
-            app.state::<TaskEngine>()
-                .controls
-                .write()
-                .await
-                .remove(&task_id);
             return;
         }
     };
-    let result = execute_workflow(&app, &control, &request).await;
-    if let Err(error) = result {
-        fail_task(&app, &task_id, &control, &error);
-    } else {
-        notify_task_success(&app, &control);
+    match execute_workflow(&app, &control, &request).await {
+        Ok(()) => {
+            drop(permit);
+            remove_control_if_same(&app, &task_id, &control).await;
+            notify_task_success(&app, &control);
+        }
+        Err(error) if error.is_transient_network() => {
+            drop(permit);
+            if let Err(persist_error) =
+                park_after_transient_network(&app, &task_id, &control, error.message()).await
+            {
+                remove_control_if_same(&app, &task_id, &control).await;
+                fail_task(&app, &task_id, &control, &persist_error);
+            }
+        }
+        Err(error) => {
+            drop(permit);
+            remove_control_if_same(&app, &task_id, &control).await;
+            fail_task(&app, &task_id, &control, error.message());
+        }
     }
-
-    app.state::<TaskEngine>()
-        .controls
-        .write()
-        .await
-        .remove(&task_id);
 }
 
 async fn execute_workflow(
     app: &AppHandle,
     control: &Arc<TaskControl>,
     request: &WorkflowRequest,
-) -> Result<(), String> {
+) -> Result<(), WorkflowError> {
     let google = app.state::<GoogleService>();
     let recovered_at_sharing = request.recovery_stage.as_deref() == Some("sharing")
         && request.existing_drive_file_id.is_some();
@@ -1086,11 +1365,23 @@ async fn execute_workflow(
             .metadata(request.existing_drive_file_id.clone().unwrap_or_default())
             .await?
     } else {
-        let archive_ready = matches!(
-            request.recovery_stage.as_deref(),
-            Some("uploading") | Some("sharing")
-        ) && request.archive_path.is_file();
+        let expected_archive_bytes = snapshot(&control.runtime)?.bytes_total;
+        let archive_ready =
+            matches!(
+                request.recovery_stage.as_deref(),
+                Some("uploading") | Some("sharing")
+            ) && archive_matches_expected(&request.archive_path, expected_archive_bytes);
+        let resumable_session_uri =
+            resumable_session_for_archive(archive_ready, request.existing_session_uri.as_deref());
         if !archive_ready {
+            // A resumable URI is tied to the exact byte sequence previously
+            // uploaded. Recompression can produce different ZIP bytes, so the
+            // old session must be cleared before rebuilding the archive.
+            control
+                .runtime
+                .lock()
+                .map_err(|_| "task lock poisoned")?
+                .session_uri = None;
             if request.archive_path.exists() {
                 tokio::fs::remove_file(&request.archive_path)
                     .await
@@ -1208,13 +1499,21 @@ async fn execute_workflow(
                 &request.archive_path,
                 &request.upload_name,
                 &request.drive_folder_id,
-                request.existing_session_uri.as_deref(),
+                resumable_session_uri,
                 control.gate.clone(),
                 on_upload_event,
             )
             .await?
     };
 
+    {
+        let mut runtime = control
+            .runtime
+            .lock()
+            .map_err(|_| "task lock poisoned".to_owned())?;
+        runtime.record.drive_file_id = Some(uploaded.id.clone());
+        runtime.record.drive_web_view_link = uploaded.web_view_link.clone();
+    }
     set_stage(app, control, "running", "sharing", 96.0)?;
     if request.make_public {
         google.make_file_public(&uploaded.id).await?;
@@ -1250,14 +1549,14 @@ async fn execute_workflow(
         runtime.session_uri = None;
     }
     publish(app, &control.runtime)?;
-    app.state::<Database>()
-        .append_log(
-            &snapshot(&control.runtime)?.id,
+    if let Ok(record) = snapshot(&control.runtime) {
+        let _ = app.state::<Database>().append_log(
+            &record.id,
             "info",
             "task.completed",
             "ZIP uploaded and temporary archive cleaned up",
-        )
-        .map_err(|error| error.to_string())?;
+        );
+    }
     Ok(())
 }
 
@@ -1268,29 +1567,35 @@ async fn run_download_workflow(
     request: DownloadWorkflowRequest,
     pool: Arc<WorkerPool>,
 ) {
-    let _permit = match wait_for_worker(&app, &task_id, &control, &pool).await {
+    let permit = match wait_for_worker(&app, &task_id, &control, &pool).await {
         Ok(permit) => permit,
         Err(error) => {
+            remove_control_if_same(&app, &task_id, &control).await;
             fail_task(&app, &task_id, &control, &error);
-            app.state::<TaskEngine>()
-                .controls
-                .write()
-                .await
-                .remove(&task_id);
             return;
         }
     };
-    let result = execute_download_workflow(&app, &control, &request).await;
-    if let Err(error) = result {
-        fail_task(&app, &task_id, &control, &error);
-    } else {
-        notify_task_success(&app, &control);
+    match execute_download_workflow(&app, &control, &request).await {
+        Ok(()) => {
+            drop(permit);
+            remove_control_if_same(&app, &task_id, &control).await;
+            notify_task_success(&app, &control);
+        }
+        Err(error) if error.is_transient_network() => {
+            drop(permit);
+            if let Err(persist_error) =
+                park_after_transient_network(&app, &task_id, &control, error.message()).await
+            {
+                remove_control_if_same(&app, &task_id, &control).await;
+                fail_task(&app, &task_id, &control, &persist_error);
+            }
+        }
+        Err(error) => {
+            drop(permit);
+            remove_control_if_same(&app, &task_id, &control).await;
+            fail_task(&app, &task_id, &control, error.message());
+        }
     }
-    app.state::<TaskEngine>()
-        .controls
-        .write()
-        .await
-        .remove(&task_id);
 }
 
 async fn run_watch_upload_workflow(
@@ -1300,47 +1605,69 @@ async fn run_watch_upload_workflow(
     request: WatchWorkflowRequest,
     pool: Arc<WorkerPool>,
 ) {
-    let _permit = match wait_for_worker(&app, &task_id, &control, &pool).await {
+    let permit = match wait_for_worker(&app, &task_id, &control, &pool).await {
         Ok(permit) => permit,
         Err(error) => {
+            remove_control_if_same(&app, &task_id, &control).await;
             fail_watch_upload_task(&app, &task_id, &control, &error);
             finish_watcher_file(&app, &task_id, &request.watcher_id, false, Some(&error));
-            app.state::<TaskEngine>()
-                .controls
-                .write()
-                .await
-                .remove(&task_id);
             return;
         }
     };
     match execute_watch_upload_workflow(&app, &control, &request).await {
         Ok(()) => {
+            drop(permit);
+            remove_control_if_same(&app, &task_id, &control).await;
             finish_watcher_file(&app, &task_id, &request.watcher_id, true, None);
         }
+        Err(error) if error.is_transient_network() => {
+            drop(permit);
+            if let Err(persist_error) =
+                park_after_transient_network(&app, &task_id, &control, error.message()).await
+            {
+                remove_control_if_same(&app, &task_id, &control).await;
+                fail_watch_upload_task(&app, &task_id, &control, &persist_error);
+                finish_watcher_file(
+                    &app,
+                    &task_id,
+                    &request.watcher_id,
+                    false,
+                    Some(&persist_error),
+                );
+            }
+        }
         Err(error) => {
-            fail_watch_upload_task(&app, &task_id, &control, &error);
-            finish_watcher_file(&app, &task_id, &request.watcher_id, false, Some(&error));
+            drop(permit);
+            remove_control_if_same(&app, &task_id, &control).await;
+            fail_watch_upload_task(&app, &task_id, &control, error.message());
+            finish_watcher_file(
+                &app,
+                &task_id,
+                &request.watcher_id,
+                false,
+                Some(error.message()),
+            );
         }
     }
-    app.state::<TaskEngine>()
-        .controls
-        .write()
-        .await
-        .remove(&task_id);
 }
 
 async fn execute_watch_upload_workflow(
     app: &AppHandle,
     control: &Arc<TaskControl>,
     request: &WatchWorkflowRequest,
-) -> Result<(), String> {
+) -> Result<(), WorkflowError> {
     if !request.source_path.is_file() {
-        return Err("watched file no longer exists".to_owned());
+        return Err("watched file no longer exists".to_owned().into());
     }
     let total_bytes = tokio::fs::metadata(&request.source_path)
         .await
         .map_err(|error| format!("cannot inspect watched file: {error}"))?
         .len();
+    // A watched source is mutable outside the app. Even when its byte length is
+    // unchanged, its contents may have been replaced while the task was parked
+    // or the app was closed. Reusing the old Drive offset could therefore join
+    // an old prefix with new bytes, so recovered watch uploads restart at zero.
+    let restarted_from_beginning = request.existing_session_uri.is_some();
     {
         let mut runtime = control.runtime.lock().map_err(|_| "task lock poisoned")?;
         runtime.record.status = "running".to_owned();
@@ -1349,6 +1676,7 @@ async fn execute_watch_upload_workflow(
         runtime.record.speed_bytes_per_second = None;
         runtime.record.eta_seconds = None;
         runtime.record.error_message = None;
+        runtime.session_uri = None;
     }
     publish(app, &control.runtime)?;
     emit_watcher_record(app, &request.watcher_id);
@@ -1356,12 +1684,16 @@ async fn execute_watch_upload_workflow(
         .append_log(
             &snapshot(&control.runtime)?.id,
             "info",
-            if request.existing_session_uri.is_some() {
-                "watch.upload_resumed"
+            if restarted_from_beginning {
+                "watch.upload_restarted"
             } else {
                 "watch.upload_started"
             },
-            "Uploading stable watched file to Google Drive",
+            if restarted_from_beginning {
+                "Watched file may have changed; restarting upload from the beginning"
+            } else {
+                "Uploading stable watched file to Google Drive"
+            },
         )
         .map_err(|error| error.to_string())?;
 
@@ -1409,7 +1741,7 @@ async fn execute_watch_upload_workflow(
             &request.upload_name,
             &request.drive_folder_id,
             &request.mime_type,
-            request.existing_session_uri.as_deref(),
+            None,
             control.gate.clone(),
             on_upload_event,
         )
@@ -1524,10 +1856,80 @@ async fn wait_for_worker(
     }
 }
 
+async fn remove_control_if_same(app: &AppHandle, task_id: &str, expected: &Arc<TaskControl>) {
+    let engine = app.state::<TaskEngine>();
+    let mut controls = engine.controls.write().await;
+    if controls
+        .get(task_id)
+        .is_some_and(|current| Arc::ptr_eq(current, expected))
+    {
+        controls.remove(task_id);
+    }
+}
+
+async fn park_after_transient_network(
+    app: &AppHandle,
+    task_id: &str,
+    control: &Arc<TaskControl>,
+    error: &str,
+) -> Result<(), String> {
+    loop {
+        match park_task_for_network(app, task_id, control, error)? {
+            NetworkParkState::Waiting => {
+                remove_control_if_same(app, task_id, control).await;
+                return Ok(());
+            }
+            NetworkParkState::Paused => control.gate.wait().await,
+        }
+    }
+}
+
+fn park_task_for_network(
+    app: &AppHandle,
+    task_id: &str,
+    control: &TaskControl,
+    error: &str,
+) -> Result<NetworkParkState, String> {
+    let state = {
+        let mut runtime = control.runtime.lock().map_err(|_| "task lock poisoned")?;
+        let state = if runtime.record.status == "paused" || control.gate.is_paused() {
+            runtime.record.status = "paused".to_owned();
+            NetworkParkState::Paused
+        } else {
+            runtime.record.status = "waiting_for_network".to_owned();
+            NetworkParkState::Waiting
+        };
+        runtime.record.error_message = Some(error.to_owned());
+        runtime.record.speed_bytes_per_second = None;
+        runtime.record.eta_seconds = None;
+        state
+    };
+    publish(app, &control.runtime)?;
+    emit_watcher_for_task(app, task_id);
+    let (event, message) = match state {
+        NetworkParkState::Waiting => (
+            "network.waiting",
+            "Network is unavailable; task parked until connectivity returns",
+        ),
+        NetworkParkState::Paused => (
+            "network.waiting_paused",
+            "Network was unavailable while pausing; reconnect recovery will begin after resume",
+        ),
+    };
+    let _ = app
+        .state::<Database>()
+        .append_log(task_id, "warn", event, message);
+    if state == NetworkParkState::Waiting {
+        app.state::<TaskEngine>()
+            .network_waiters_changed
+            .notify_one();
+    }
+    Ok(state)
+}
+
 fn fail_task(app: &AppHandle, task_id: &str, control: &TaskControl, error: &str) {
     if let Ok(mut runtime) = control.runtime.lock() {
         runtime.record.status = "failed".to_owned();
-        runtime.record.stage = "failed".to_owned();
         runtime.record.error_message = Some(error.to_owned());
         runtime.record.speed_bytes_per_second = None;
         runtime.record.eta_seconds = None;
@@ -1546,7 +1948,6 @@ fn fail_task(app: &AppHandle, task_id: &str, control: &TaskControl, error: &str)
 fn fail_watch_upload_task(app: &AppHandle, task_id: &str, control: &TaskControl, error: &str) {
     if let Ok(mut runtime) = control.runtime.lock() {
         runtime.record.status = "failed".to_owned();
-        runtime.record.stage = "failed".to_owned();
         runtime.record.error_message = Some(error.to_owned());
         runtime.record.speed_bytes_per_second = None;
         runtime.record.eta_seconds = None;
@@ -1566,14 +1967,40 @@ async fn execute_download_workflow(
     app: &AppHandle,
     control: &Arc<TaskControl>,
     request: &DownloadWorkflowRequest,
-) -> Result<(), String> {
+) -> Result<(), WorkflowError> {
     let recovered_at_opening = request.recovery_stage.as_deref() == Some("opening")
         && request.extraction_destination.is_dir();
     if !recovered_at_opening {
-        let archive_ready = matches!(
+        let mut archive_ready = matches!(
             request.recovery_stage.as_deref(),
             Some("inspecting") | Some("extracting")
         ) && request.download_path.is_file();
+        let compressed_bytes = if !archive_ready || request.verify_download_artifact {
+            match request.compressed_bytes {
+                Some(bytes) if !request.verify_download_artifact => bytes,
+                _ => {
+                    let metadata = app
+                        .state::<GoogleService>()
+                        .metadata(request.file_id.clone())
+                        .await?;
+                    metadata
+                        .size
+                        .as_deref()
+                        .ok_or_else(|| {
+                            "Google Drive metadata does not include ZIP size".to_owned()
+                        })?
+                        .parse::<u64>()
+                        .map_err(|_| "Google Drive returned an invalid ZIP size".to_owned())?
+                }
+            }
+        } else {
+            request.compressed_bytes.unwrap_or(0)
+        };
+        if request.verify_download_artifact {
+            archive_ready = tokio::fs::metadata(&request.download_path)
+                .await
+                .is_ok_and(|metadata| metadata.len() == compressed_bytes);
+        }
         if !archive_ready {
             set_stage(app, control, "running", "downloading", 5.0)?;
             app.state::<Database>()
@@ -1635,7 +2062,7 @@ async fn execute_download_workflow(
                 .download_file(
                     &request.file_id,
                     &request.download_path,
-                    request.compressed_bytes,
+                    compressed_bytes,
                     request.resume_existing,
                     control.gate.clone(),
                     on_download_event,
@@ -1747,14 +2174,14 @@ async fn execute_download_workflow(
         runtime.session_uri = None;
     }
     publish(app, &control.runtime)?;
-    app.state::<Database>()
-        .append_log(
-            &snapshot(&control.runtime)?.id,
+    if let Ok(record) = snapshot(&control.runtime) {
+        let _ = app.state::<Database>().append_log(
+            &record.id,
             "info",
             "task.completed",
             "ZIP downloaded, extracted, cleaned up, and opened in Explorer",
-        )
-        .map_err(|error| error.to_string())?;
+        );
+    }
     Ok(())
 }
 
@@ -1799,8 +2226,7 @@ fn publish(app: &AppHandle, runtime: &Arc<StdMutex<TaskRuntime>>) -> Result<(), 
         })
         .map_err(|error| error.to_string())?;
     if record.kind != "watch-upload" {
-        app.emit("task-progress", &record)
-            .map_err(|error| error.to_string())?;
+        let _ = app.emit("task-progress", &record);
     }
     Ok(())
 }
@@ -2049,5 +2475,96 @@ mod tests {
             mime_type_for_path(Path::new("unknown.bin")),
             "application/octet-stream"
         );
+    }
+
+    #[test]
+    fn legacy_failed_tasks_infer_resumable_stages_from_persisted_artifacts() {
+        let base_record = TaskRecord {
+            id: "task-one".to_owned(),
+            name: "Retry me".to_owned(),
+            kind: "compress-upload".to_owned(),
+            status: "queued".to_owned(),
+            stage: "failed".to_owned(),
+            source_path: "C:\\source".to_owned(),
+            destination_path: Some("root".to_owned()),
+            progress: 50.0,
+            bytes_processed: 10,
+            bytes_total: 20,
+            speed_bytes_per_second: None,
+            eta_seconds: None,
+            retry_count: 5,
+            error_message: Some("offline".to_owned()),
+            drive_file_id: None,
+            drive_web_view_link: None,
+            created_at: "2026-01-01T00:00:00.000Z".to_owned(),
+            updated_at: "2026-01-01T00:00:00.000Z".to_owned(),
+        };
+        let upload = RecoverableTask {
+            record: base_record.clone(),
+            task_type: "compress_upload".to_owned(),
+            archive_path: Some("C:\\cache\\archive.zip".to_owned()),
+            resumable_session_uri: Some("https://upload.test/session".to_owned()),
+            options_json: "{}".to_owned(),
+            watcher_id: None,
+        };
+        assert_eq!(infer_recovery_stage(&upload), "uploading");
+
+        let mut sharing = upload.clone();
+        sharing.record.drive_file_id = Some("drive-file".to_owned());
+        assert_eq!(infer_recovery_stage(&sharing), "sharing");
+
+        let mut completed_upload = sharing.clone();
+        completed_upload.record.stage = "completed".to_owned();
+        assert_eq!(infer_recovery_stage(&completed_upload), "sharing");
+
+        let download = RecoverableTask {
+            record: TaskRecord {
+                kind: "download-extract".to_owned(),
+                ..base_record
+            },
+            task_type: "download_extract".to_owned(),
+            archive_path: Some("C:\\cache\\partial.zip".to_owned()),
+            resumable_session_uri: None,
+            options_json: "{}".to_owned(),
+            watcher_id: None,
+        };
+        assert_eq!(infer_recovery_stage(&download), "downloading");
+
+        let mut completed_download = download;
+        completed_download.record.stage = "completed".to_owned();
+        assert_eq!(infer_recovery_stage(&completed_download), "opening");
+    }
+
+    #[test]
+    fn network_rechecks_back_off_and_cap_at_thirty_seconds() {
+        let mut delay = NETWORK_RECHECK_INITIAL;
+        delay = next_network_recheck(delay);
+        assert_eq!(delay, Duration::from_secs(10));
+        delay = next_network_recheck(delay);
+        assert_eq!(delay, Duration::from_secs(20));
+        delay = next_network_recheck(delay);
+        assert_eq!(delay, NETWORK_RECHECK_MAX);
+        assert_eq!(next_network_recheck(delay), NETWORK_RECHECK_MAX);
+    }
+
+    #[test]
+    fn resumable_session_is_used_only_for_the_same_archive_bytes() {
+        let session = Some("https://upload.test/session");
+        assert_eq!(resumable_session_for_archive(true, session), session);
+        assert_eq!(resumable_session_for_archive(false, session), None);
+    }
+
+    #[test]
+    fn resumable_archive_must_still_match_its_persisted_size() {
+        let directory = tempfile::tempdir().expect("temporary archive directory");
+        let archive = directory.path().join("upload.zip");
+        std::fs::write(&archive, b"zip-bytes").expect("write archive fixture");
+
+        assert!(archive_matches_expected(&archive, 9));
+        assert!(!archive_matches_expected(&archive, 8));
+        assert!(!archive_matches_expected(
+            &directory.path().join("missing.zip"),
+            9
+        ));
     }
 }

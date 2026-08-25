@@ -1,6 +1,7 @@
 export const TASK_STATUSES = [
   "queued",
   "running",
+  "waiting_for_network",
   "paused",
   "stopped",
   "failed",
@@ -96,6 +97,7 @@ export interface FolderWatcher {
 export const taskStatusLabel: Record<TaskStatus, string> = {
   queued: "Queued",
   running: "Running",
+  waiting_for_network: "Waiting for network",
   paused: "Paused",
   stopped: "Stopped",
   failed: "Failed",
