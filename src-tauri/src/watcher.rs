@@ -16,6 +16,7 @@ use uuid::Uuid;
 
 use crate::{
     database::{Database, WatcherRecord},
+    desktop,
     google::GoogleService,
     task_engine,
 };
@@ -69,6 +70,7 @@ pub struct CreateWatcherRequest {
 #[derive(Clone)]
 struct WatcherConfig {
     id: String,
+    name: String,
     local_path: PathBuf,
     drive_folder_id: String,
     settling_delay: Duration,
@@ -379,6 +381,7 @@ async fn run_watcher(
         )
         .map_err(|error| error.to_string())?;
     emit_watcher(app, &config.id);
+    desktop::notify_watcher_result(app, &config.name, true, None);
     Ok(())
 }
 
@@ -390,6 +393,7 @@ fn watcher_config(record: &WatcherRecord) -> Result<WatcherConfig, String> {
         .ok_or_else(|| "watcher has no Drive folder ID".to_owned())?;
     Ok(WatcherConfig {
         id: record.id.clone(),
+        name: record.name.clone(),
         local_path: PathBuf::from(&record.local_path),
         drive_folder_id,
         settling_delay: Duration::from_millis(record.settling_delay_ms),
@@ -471,6 +475,9 @@ fn emit_watcher(app: &AppHandle, id: &str) {
 }
 
 fn fail_watcher(app: &AppHandle, id: &str, error: &str) {
+    let name = find_watcher(&app.state::<Database>(), id)
+        .map(|watcher| watcher.name)
+        .unwrap_or_else(|_| "Folder watcher".to_owned());
     let _ = app.state::<Database>().update_watcher_state(
         id,
         false,
@@ -483,6 +490,7 @@ fn fail_watcher(app: &AppHandle, id: &str, error: &str) {
         false,
     );
     emit_watcher(app, id);
+    desktop::notify_watcher_result(app, &name, false, Some(error));
 }
 
 #[cfg(test)]

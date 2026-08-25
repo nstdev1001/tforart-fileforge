@@ -1,5 +1,5 @@
 import { zodResolver } from "@hookform/resolvers/zod";
-import { Check, FolderCog, Palette, Save, SlidersHorizontal } from "lucide-react";
+import { Bell, Check, FolderCog, PanelTopClose, Palette, Power, Save, Send, SlidersHorizontal } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
 import { z } from "zod";
@@ -9,13 +9,22 @@ import { SevenZipSettings } from "@/components/settings/seven-zip-settings";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { getWorkerPoolConfig, setWorkerPoolConfig } from "@/lib/tauri";
+import {
+  getDesktopPreferences,
+  getWorkerPoolConfig,
+  sendTestNotification,
+  setDesktopPreferences,
+  setWorkerPoolConfig,
+} from "@/lib/tauri";
 import { cn } from "@/lib/utils";
 import { type Theme, useAppStore } from "@/store/app-store";
 
 const settingsSchema = z.object({
   concurrentUploads: z.number().int().min(1).max(10),
   temporaryDirectory: z.string().max(500),
+  autoStart: z.boolean(),
+  closeToTray: z.boolean(),
+  notificationsEnabled: z.boolean(),
 });
 
 type SettingsForm = z.infer<typeof settingsSchema>;
@@ -33,7 +42,13 @@ export function SettingsPage() {
   const [saveError, setSaveError] = useState<string | null>(null);
   const { register, handleSubmit, setValue, formState: { errors, isSubmitting } } = useForm<SettingsForm>({
     resolver: zodResolver(settingsSchema),
-    defaultValues: { concurrentUploads: 3, temporaryDirectory: "" },
+    defaultValues: {
+      concurrentUploads: 3,
+      temporaryDirectory: "",
+      autoStart: false,
+      closeToTray: true,
+      notificationsEnabled: true,
+    },
   });
 
   useEffect(() => {
@@ -42,12 +57,26 @@ export function SettingsPage() {
       .catch(() => {
         // Browser preview has no native worker pool.
       });
+    getDesktopPreferences()
+      .then((preferences) => {
+        setValue("autoStart", preferences.autoStart);
+        setValue("closeToTray", preferences.closeToTray);
+        setValue("notificationsEnabled", preferences.notificationsEnabled);
+      })
+      .catch(() => {
+        // Browser preview has no desktop integration plugins.
+      });
   }, [setValue]);
 
   async function saveSettings(values: SettingsForm) {
     setSaveError(null);
     try {
       await setWorkerPoolConfig(values.concurrentUploads);
+      await setDesktopPreferences({
+        autoStart: values.autoStart,
+        closeToTray: values.closeToTray,
+        notificationsEnabled: values.notificationsEnabled,
+      });
       setSaved(true);
       window.setTimeout(() => setSaved(false), 1800);
     } catch (error) {
@@ -89,6 +118,31 @@ export function SettingsPage() {
           <label className="space-y-2 text-xs font-semibold">
             <span className="flex items-center gap-1.5"><FolderCog className="size-3.5" /> Temporary directory</span>
             <Input placeholder="Use system default" {...register("temporaryDirectory")} />
+          </label>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader className="flex-row items-start gap-3 border-b border-border/70">
+          <Power className="mt-0.5 size-5 text-primary" />
+          <div><CardTitle>Desktop experience</CardTitle><CardDescription>Control startup, background behavior, and Windows notifications.</CardDescription></div>
+        </CardHeader>
+        <CardContent className="space-y-3 pt-5">
+          <label className="flex cursor-pointer items-center gap-3 rounded-xl border border-border/70 p-4 hover:bg-accent/60">
+            <input type="checkbox" className="size-4 accent-[hsl(var(--primary))]" {...register("autoStart")} />
+            <Power className="size-4 text-primary" />
+            <span className="flex-1"><span className="block text-xs font-semibold">Start with Windows</span><span className="mt-0.5 block text-[11px] text-muted-foreground">Launch FileForge hidden in the system tray after sign-in.</span></span>
+          </label>
+          <label className="flex cursor-pointer items-center gap-3 rounded-xl border border-border/70 p-4 hover:bg-accent/60">
+            <input type="checkbox" className="size-4 accent-[hsl(var(--primary))]" {...register("closeToTray")} />
+            <PanelTopClose className="size-4 text-primary" />
+            <span className="flex-1"><span className="block text-xs font-semibold">Keep running after window closes</span><span className="mt-0.5 block text-[11px] text-muted-foreground">The close button hides FileForge; use Quit from the tray to stop background tasks.</span></span>
+          </label>
+          <label className="flex cursor-pointer items-center gap-3 rounded-xl border border-border/70 p-4 hover:bg-accent/60">
+            <input type="checkbox" className="size-4 accent-[hsl(var(--primary))]" {...register("notificationsEnabled")} />
+            <Bell className="size-4 text-primary" />
+            <span className="flex-1"><span className="block text-xs font-semibold">Native task notifications</span><span className="mt-0.5 block text-[11px] text-muted-foreground">Notify when a task or watcher completes or fails.</span></span>
+            <Button type="button" variant="outline" size="sm" onClick={(event) => { event.preventDefault(); event.stopPropagation(); sendTestNotification().catch((error) => setSaveError(String(error))); }}><Send className="size-3" /> Test</Button>
           </label>
         </CardContent>
       </Card>

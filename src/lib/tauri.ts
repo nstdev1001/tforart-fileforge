@@ -39,6 +39,12 @@ export interface CreateWatcherRequest {
   includeExtensions: string[];
 }
 
+export interface DesktopPreferences {
+  autoStart: boolean;
+  closeToTray: boolean;
+  notificationsEnabled: boolean;
+}
+
 export async function pickFolder(): Promise<string | null> {
   return invoke<string | null>("pick_folder");
 }
@@ -127,6 +133,20 @@ export async function restartWatcher(watcherId: string): Promise<FolderWatcher> 
 
 export async function deleteWatcher(watcherId: string): Promise<void> {
   return invoke<void>("delete_watcher", { watcherId });
+}
+
+export async function getDesktopPreferences(): Promise<DesktopPreferences> {
+  return invoke<DesktopPreferences>("get_desktop_preferences");
+}
+
+export async function setDesktopPreferences(
+  request: DesktopPreferences,
+): Promise<DesktopPreferences> {
+  return invoke<DesktopPreferences>("set_desktop_preferences", { request });
+}
+
+export async function sendTestNotification(): Promise<void> {
+  return invoke<void>("send_test_notification");
 }
 
 export async function startCompressUpload(

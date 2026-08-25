@@ -11,7 +11,7 @@ use tauri::{AppHandle, Manager, Runtime};
 use thiserror::Error;
 
 const DATABASE_FILE: &str = "fileforge.db";
-const LATEST_SCHEMA_VERSION: i64 = 4;
+const LATEST_SCHEMA_VERSION: i64 = 5;
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -576,6 +576,14 @@ fn apply_migrations(connection: &mut Connection) -> Result<(), rusqlite::Error> 
         transaction.commit()?;
     }
 
+    let current_version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if current_version < 5 {
+        let transaction = connection.transaction()?;
+        transaction.execute_batch(include_str!("../migrations/0005_desktop_experience.sql"))?;
+        transaction.pragma_update(None, "user_version", 5)?;
+        transaction.commit()?;
+    }
+
     let final_version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
     if final_version != LATEST_SCHEMA_VERSION {
         return Err(rusqlite::Error::InvalidQuery);
@@ -691,6 +699,15 @@ mod tests {
             .optional()
             .expect("inspect watcher task columns");
         assert_eq!(watcher_column.as_deref(), Some("watcher_id"));
+
+        let notifications: String = connection
+            .query_row(
+                "SELECT value FROM settings WHERE key = 'notifications_enabled'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("desktop notification setting");
+        assert_eq!(notifications, "true");
     }
 
     #[test]

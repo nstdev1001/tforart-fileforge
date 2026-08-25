@@ -1,5 +1,6 @@
 mod commands;
 mod database;
+mod desktop;
 mod google;
 mod seven_zip;
 mod task_engine;
@@ -18,6 +19,11 @@ pub fn run() {
     let _ = dotenvy::dotenv();
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            Some(vec!["--background"]),
+        ))
         .setup(|app| {
             let database = Database::initialize(app.handle())?;
             let concurrent_tasks = database
@@ -28,6 +34,8 @@ pub fn run() {
             app.manage(GoogleService::new());
             app.manage(TaskEngine::new(concurrent_tasks));
             app.manage(WatcherService::new());
+            app.manage(desktop::DesktopState::new());
+            desktop::setup(app)?;
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 task_engine::recover_unfinished_tasks(handle.clone()).await;
@@ -61,7 +69,11 @@ pub fn run() {
             watcher::stop_watcher,
             watcher::restart_watcher,
             watcher::delete_watcher,
+            desktop::get_desktop_preferences,
+            desktop::set_desktop_preferences,
+            desktop::send_test_notification,
         ])
+        .on_window_event(desktop::handle_window_event)
         .run(tauri::generate_context!())
         .expect("failed to run FileForge");
 }

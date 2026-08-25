@@ -15,6 +15,7 @@ use uuid::Uuid;
 
 use crate::{
     database::{Database, LogRecord, RecoverableTask, TaskRecord, TaskUpdate},
+    desktop,
     google::{parse_drive_file_id, DownloadEvent, GoogleService, UploadEvent},
     seven_zip,
 };
@@ -83,6 +84,7 @@ struct TaskControl {
 pub struct TaskEngine {
     controls: RwLock<HashMap<String, Arc<TaskControl>>>,
     pool: Arc<WorkerPool>,
+    globally_paused: AtomicBool,
 }
 
 impl TaskEngine {
@@ -90,6 +92,7 @@ impl TaskEngine {
         Self {
             controls: RwLock::new(HashMap::new()),
             pool: Arc::new(WorkerPool::new(limit)),
+            globally_paused: AtomicBool::new(false),
         }
     }
 }
@@ -297,7 +300,11 @@ pub async fn start_compress_upload(
         .find(|task| task.id == task_id)
         .ok_or_else(|| "created task could not be loaded".to_owned())?;
     let control = Arc::new(TaskControl {
-        gate: Arc::new(PauseGate::new()),
+        gate: Arc::new(if engine.globally_paused.load(Ordering::SeqCst) {
+            PauseGate::new_paused()
+        } else {
+            PauseGate::new()
+        }),
         runtime: Arc::new(StdMutex::new(TaskRuntime {
             record: record.clone(),
             archive_path: Some(archive_path.to_string_lossy().into_owned()),
@@ -432,7 +439,11 @@ pub async fn start_download_extract(
         .find(|task| task.id == task_id)
         .ok_or_else(|| "created task could not be loaded".to_owned())?;
     let control = Arc::new(TaskControl {
-        gate: Arc::new(PauseGate::new()),
+        gate: Arc::new(if engine.globally_paused.load(Ordering::SeqCst) {
+            PauseGate::new_paused()
+        } else {
+            PauseGate::new()
+        }),
         runtime: Arc::new(StdMutex::new(TaskRuntime {
             record: record.clone(),
             archive_path: Some(download_path.to_string_lossy().into_owned()),
@@ -523,7 +534,17 @@ pub async fn enqueue_watch_upload(
         .find(|task| task.id == task_id)
         .ok_or_else(|| "watch upload task could not be loaded".to_owned())?;
     let control = Arc::new(TaskControl {
-        gate: Arc::new(PauseGate::new()),
+        gate: Arc::new(
+            if app
+                .state::<TaskEngine>()
+                .globally_paused
+                .load(Ordering::SeqCst)
+            {
+                PauseGate::new_paused()
+            } else {
+                PauseGate::new()
+            },
+        ),
         runtime: Arc::new(StdMutex::new(TaskRuntime {
             record: record.clone(),
             archive_path: None,
@@ -589,6 +610,9 @@ pub async fn resume_task(
     database: State<'_, Database>,
     engine: State<'_, TaskEngine>,
 ) -> Result<TaskRecord, String> {
+    if engine.globally_paused.load(Ordering::SeqCst) {
+        return Err("all tasks are paused from the system tray".to_owned());
+    }
     let control = engine
         .controls
         .read()
@@ -612,6 +636,88 @@ pub async fn resume_task(
     snapshot(&control.runtime)
 }
 
+pub async fn pause_all(app: &AppHandle) -> usize {
+    app.state::<TaskEngine>()
+        .globally_paused
+        .store(true, Ordering::SeqCst);
+    let controls: Vec<Arc<TaskControl>> = app
+        .state::<TaskEngine>()
+        .controls
+        .read()
+        .await
+        .values()
+        .cloned()
+        .collect();
+    let mut changed = 0;
+    for control in controls {
+        if control.gate.is_paused() {
+            continue;
+        }
+        control.gate.pause();
+        let task_id = if let Ok(mut runtime) = control.runtime.lock() {
+            runtime.record.status = "paused".to_owned();
+            Some(runtime.record.id.clone())
+        } else {
+            None
+        };
+        if publish(app, &control.runtime).is_ok() {
+            changed += 1;
+        }
+        if let Some(task_id) = task_id {
+            let _ = app.state::<Database>().append_log(
+                &task_id,
+                "info",
+                "task.paused_all",
+                "Task paused from the system tray",
+            );
+        }
+    }
+    changed
+}
+
+pub async fn resume_all(app: &AppHandle) -> usize {
+    app.state::<TaskEngine>()
+        .globally_paused
+        .store(false, Ordering::SeqCst);
+    let controls: Vec<Arc<TaskControl>> = app
+        .state::<TaskEngine>()
+        .controls
+        .read()
+        .await
+        .values()
+        .cloned()
+        .collect();
+    let mut changed = 0;
+    for control in controls {
+        if !control.gate.is_paused() {
+            continue;
+        }
+        let task_id = if let Ok(mut runtime) = control.runtime.lock() {
+            runtime.record.status = if runtime.record.stage == "queued" {
+                "queued".to_owned()
+            } else {
+                "running".to_owned()
+            };
+            Some(runtime.record.id.clone())
+        } else {
+            None
+        };
+        control.gate.resume();
+        if publish(app, &control.runtime).is_ok() {
+            changed += 1;
+        }
+        if let Some(task_id) = task_id {
+            let _ = app.state::<Database>().append_log(
+                &task_id,
+                "info",
+                "task.resumed_all",
+                "Task resumed from the system tray",
+            );
+        }
+    }
+    changed
+}
+
 pub async fn recover_unfinished_tasks(app: AppHandle) {
     let tasks = match app.state::<Database>().list_recoverable_tasks() {
         Ok(tasks) => tasks,
@@ -623,6 +729,7 @@ pub async fn recover_unfinished_tasks(app: AppHandle) {
 
     for task in tasks {
         let task_id = task.record.id.clone();
+        let task_name = task.record.name.clone();
         let watcher_id = task.watcher_id.clone();
         if let Err(error) = recover_task(&app, task).await {
             let _ = app
@@ -645,6 +752,7 @@ pub async fn recover_unfinished_tasks(app: AppHandle) {
             if let Some(watcher_id) = watcher_id {
                 finish_watcher_file(&app, &watcher_id, false, Some(&error));
             }
+            desktop::notify_task_result(&app, &task_name, false, Some(&error));
             eprintln!("FileForge could not recover task {task_id}: {error}");
         }
     }
@@ -661,11 +769,18 @@ async fn recover_task(app: &AppHandle, task: RecoverableTask) -> Result<(), Stri
     record.eta_seconds = None;
     record.error_message = None;
 
-    let gate = Arc::new(if original_status == "paused" {
-        PauseGate::new_paused()
-    } else {
-        PauseGate::new()
-    });
+    let gate = Arc::new(
+        if original_status == "paused"
+            || app
+                .state::<TaskEngine>()
+                .globally_paused
+                .load(Ordering::SeqCst)
+        {
+            PauseGate::new_paused()
+        } else {
+            PauseGate::new()
+        },
+    );
     let control = Arc::new(TaskControl {
         gate,
         runtime: Arc::new(StdMutex::new(TaskRuntime {
@@ -926,6 +1041,8 @@ async fn run_workflow(
     let result = execute_workflow(&app, &control, &request).await;
     if let Err(error) = result {
         fail_task(&app, &task_id, &control, &error);
+    } else {
+        notify_task_success(&app, &control);
     }
 
     app.state::<TaskEngine>()
@@ -1145,6 +1262,8 @@ async fn run_download_workflow(
     let result = execute_download_workflow(&app, &control, &request).await;
     if let Err(error) = result {
         fail_task(&app, &task_id, &control, &error);
+    } else {
+        notify_task_success(&app, &control);
     }
     app.state::<TaskEngine>()
         .controls
@@ -1174,7 +1293,10 @@ async fn run_watch_upload_workflow(
         }
     };
     match execute_watch_upload_workflow(&app, &control, &request).await {
-        Ok(()) => finish_watcher_file(&app, &request.watcher_id, true, None),
+        Ok(()) => {
+            finish_watcher_file(&app, &request.watcher_id, true, None);
+            notify_task_success(&app, &control);
+        }
         Err(error) => {
             fail_task(&app, &task_id, &control, &error);
             finish_watcher_file(&app, &request.watcher_id, false, Some(&error));
@@ -1390,6 +1512,15 @@ fn fail_task(app: &AppHandle, task_id: &str, control: &TaskControl, error: &str)
         .state::<Database>()
         .append_log(task_id, "error", "task.failed", error);
     let _ = publish(app, &control.runtime);
+    if let Ok(record) = snapshot(&control.runtime) {
+        desktop::notify_task_result(app, &record.name, false, Some(error));
+    }
+}
+
+fn notify_task_success(app: &AppHandle, control: &TaskControl) {
+    if let Ok(record) = snapshot(&control.runtime) {
+        desktop::notify_task_result(app, &record.name, true, None);
+    }
 }
 
 async fn execute_download_workflow(

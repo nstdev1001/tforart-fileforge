@@ -32,6 +32,9 @@ Implemented:
 - Per-task operational history for queue admission, worker start, stage transitions, retry/backoff events, recovery, completion, warnings, and failures.
 - Native recursive folder watching with configurable 1–10 second stability detection, case-insensitive extension filters, and automatic `.tmp`/`.part` exclusion.
 - Automatic per-file resumable uploads through the shared worker pool, 30-second inactivity stop, queue draining, and persisted public Google Drive folder links.
+- Native system tray controls for opening FileForge, pausing/resuming every task, and explicitly quitting the background process.
+- Configurable close-to-tray behavior, hidden `--background` startup, and Windows auto-start integration.
+- Native desktop notifications for successful and failed tasks, completed/error watchers, plus a Settings test action.
 
 ## Requirements
 
@@ -53,6 +56,7 @@ npm run tauri:dev
 ./scripts/verify-phase4.ps1
 ./scripts/verify-phase5.ps1
 ./scripts/verify-phase6.ps1
+./scripts/verify-phase7.ps1
 ```
 
 `npm run dev` runs the browser UI only. Native folder picking, disk-space inspection, and SQLite health are available when running `npm run tauri:dev`.
@@ -85,8 +89,10 @@ The Tauri npm commands use `scripts/run-tauri.ps1`, which locates Cargo in the s
 │   ├── migrations/0001_initial.sql   # Phase 1 SQLite schema
 │   ├── migrations/0003_task_recovery.sql # Phase 5 recovery metadata
 │   ├── migrations/0004_watch_automation.sql # Phase 6 watcher state
+│   ├── migrations/0005_desktop_experience.sql # Phase 7 desktop preferences
 │   ├── src/commands.rs               # folder picker, disk space, DB health
 │   ├── src/database.rs               # connection, pragmas, migrations
+│   ├── src/desktop.rs                # tray, auto-start, background mode, notifications
 │   ├── src/google/                    # OAuth, keyring, and Drive API client
 │   ├── src/lib.rs                    # Tauri application builder
 │   ├── src/main.rs                   # Windows executable entry point
@@ -148,3 +154,11 @@ Open History to select any persisted task and inspect its chronological operatio
 5. After 30 seconds without a new matching file, the watcher stops accepting events but waits for every queued upload. It then applies public-reader permission to the Drive folder and exposes its copyable `webViewLink`.
 
 Enabled watchers and unfinished child uploads are restored after an application restart. Each detected file is represented by a regular `watch-upload` task, so progress, pause/resume, retry, recovery, and detailed History logs use the same task engine as the other workflows.
+
+## Desktop background experience
+
+The tray menu exposes **Open FileForge**, **Pause All**, **Resume All**, and **Quit**. A left click on the tray icon restores and focuses the main window. Global pause also holds newly queued tasks until **Resume All** is selected.
+
+Settings → Desktop experience controls Windows auto-start, close-to-tray, and native task notifications. Auto-start launches FileForge with `--background`; the main window remains hidden while the tray and recovery workers stay active. When close-to-tray is disabled, closing the main window exits the process.
+
+Use **Send test** in Settings to validate notifications. On Windows, test the final notification identity and icon from an installed FileForge bundle; notifications emitted by a development executable can appear under the PowerShell development identity.
