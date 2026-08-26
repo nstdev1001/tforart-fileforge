@@ -13,9 +13,9 @@ import type { FolderWatcher, Task, TaskLog, WorkerPoolConfig } from "@/types/tas
 
 export interface SevenZipStatus {
   available: boolean;
-  path?: string;
-  version?: string;
-  source?: string;
+  path?: string | null;
+  version?: string | null;
+  source?: string | null;
 }
 
 export interface StartCompressUploadRequest {
@@ -131,6 +131,10 @@ export async function getGoogleDriveWebViewLink(fileId: string): Promise<DriveWe
 
 export async function getSevenZipStatus(): Promise<SevenZipStatus> {
   return invoke<SevenZipStatus>("get_7zip_status");
+}
+
+export async function openSevenZipDownloadPage(): Promise<void> {
+  return invoke<void>("open_7zip_download_page");
 }
 
 export async function setSevenZipPath(path: string): Promise<SevenZipStatus> {

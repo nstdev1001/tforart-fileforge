@@ -1,13 +1,15 @@
 import { zodResolver } from "@hookform/resolvers/zod";
-import { Archive, Folder, FolderOpen, LoaderCircle, ShieldCheck, X } from "lucide-react";
+import { Archive, Folder, FolderOpen, LoaderCircle, ShieldCheck, Wrench, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
 import { z } from "zod";
 
 import { DriveFolderPicker, type DriveFolderSelection } from "@/components/google/drive-folder-picker";
+import { SevenZipSetupDialog } from "@/components/settings/seven-zip-setup-dialog";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { isMissingSevenZipError, toErrorMessage, unavailableSevenZipStatus } from "@/lib/seven-zip";
 import {
   getSevenZipStatus,
   pickFolder,
@@ -28,6 +30,8 @@ type FormValues = z.infer<typeof formSchema>;
 export function NewCompressUploadForm({ onClose }: { onClose: () => void }) {
   const upsertTask = useAppStore((state) => state.upsertTask);
   const [sevenZip, setSevenZip] = useState<SevenZipStatus | null>(null);
+  const [sevenZipDialogOpen, setSevenZipDialogOpen] = useState(false);
+  const [sevenZipIssue, setSevenZipIssue] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [showDrivePicker, setShowDrivePicker] = useState(false);
   const [driveFolderName, setDriveFolderName] = useState("My Drive");
@@ -38,7 +42,22 @@ export function NewCompressUploadForm({ onClose }: { onClose: () => void }) {
   const sourcePath = watch("sourcePath");
 
   useEffect(() => {
-    getSevenZipStatus().then(setSevenZip).catch((reason) => setError(toMessage(reason)));
+    let disposed = false;
+    getSevenZipStatus()
+      .then((status) => {
+        if (disposed) return;
+        setSevenZip(status);
+        if (!status.available) setSevenZipDialogOpen(true);
+      })
+      .catch((reason) => {
+        if (disposed) return;
+        setSevenZip(unavailableSevenZipStatus);
+        setSevenZipIssue(toErrorMessage(reason));
+        setSevenZipDialogOpen(true);
+      });
+    return () => {
+      disposed = true;
+    };
   }, []);
 
   async function chooseFolder() {
@@ -61,8 +80,20 @@ export function NewCompressUploadForm({ onClose }: { onClose: () => void }) {
       upsertTask(task);
       onClose();
     } catch (reason) {
-      setError(toMessage(reason));
+      if (isMissingSevenZipError(reason)) {
+        setSevenZip(unavailableSevenZipStatus);
+        setSevenZipIssue(null);
+        setSevenZipDialogOpen(true);
+      } else {
+        setError(toErrorMessage(reason));
+      }
     }
+  }
+
+  function handleSevenZipReady(status: SevenZipStatus) {
+    setSevenZip(status);
+    setSevenZipIssue(null);
+    setError(null);
   }
 
   function chooseDriveFolder(folder: DriveFolderSelection) {
@@ -117,7 +148,19 @@ export function NewCompressUploadForm({ onClose }: { onClose: () => void }) {
 
           <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl bg-muted/45 px-3.5 py-3 text-[11px] text-muted-foreground">
             <span className="flex items-center gap-2"><ShieldCheck className="size-4 text-primary" /> Temporary ZIP is deleted after a successful upload.</span>
-            <span className="flex items-center gap-2"><Folder className="size-4" /> {sevenZip?.version ?? sevenZip?.path ?? "Checking 7-Zip..."}</span>
+            <span className="flex items-center gap-2">
+              <Folder className="size-4" />
+              {sevenZip === null
+                ? "Checking 7-Zip..."
+                : sevenZip.available
+                  ? sevenZip.version ?? sevenZip.path ?? "7-Zip ready"
+                  : "7-Zip is not configured"}
+              {sevenZip !== null && !sevenZip.available ? (
+                <Button type="button" variant="outline" size="sm" className="h-7" onClick={() => setSevenZipDialogOpen(true)}>
+                  <Wrench className="size-3" /> Set up
+                </Button>
+              ) : null}
+            </span>
           </div>
           {error ? <p role="alert" className="rounded-lg bg-red-500/10 px-3 py-2 text-xs text-red-700 dark:text-red-300">{error}</p> : null}
 
@@ -136,11 +179,14 @@ export function NewCompressUploadForm({ onClose }: { onClose: () => void }) {
         onClose={() => setShowDrivePicker(false)}
         onSelect={chooseDriveFolder}
       />
+      <SevenZipSetupDialog
+        open={sevenZipDialogOpen}
+        currentPath={sevenZip?.path}
+        issue={sevenZipIssue}
+        onClose={() => setSevenZipDialogOpen(false)}
+        onReady={handleSevenZipReady}
+      />
     </>
   );
-}
-
-function toMessage(error: unknown) {
-  return typeof error === "string" ? error : error instanceof Error ? error.message : "Unexpected native error";
 }
 

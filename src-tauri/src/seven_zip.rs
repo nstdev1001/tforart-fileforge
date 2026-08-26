@@ -16,6 +16,7 @@ use walkdir::WalkDir;
 use crate::database::Database;
 
 const SEVEN_ZIP_SETTING: &str = "seven_zip_path";
+const SEVEN_ZIP_DOWNLOAD_URL: &str = "https://www.7-zip.org/download.html";
 
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -51,7 +52,15 @@ pub enum SevenZipError {
 
 #[tauri::command]
 pub async fn get_7zip_status(database: State<'_, Database>) -> Result<SevenZipStatus, String> {
-    status(&database).await.map_err(|error| error.to_string())
+    map_get_status(status(&database).await)
+}
+
+#[tauri::command]
+pub async fn open_7zip_download_page() -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(|| open::that(SEVEN_ZIP_DOWNLOAD_URL))
+        .await
+        .map_err(|error| format!("7-Zip download page opener failed: {error}"))?
+        .map_err(|error| format!("could not open the 7-Zip download page: {error}"))
 }
 
 #[tauri::command]
@@ -61,21 +70,42 @@ pub async fn set_7zip_path(
 ) -> Result<SevenZipStatus, String> {
     let executable =
         validate_executable(Path::new(path.trim())).map_err(|error| error.to_string())?;
+    let version = read_version(&executable)
+        .await
+        .map_err(|error| format!("could not verify configured 7z.exe: {error}"))?;
     database
         .set_setting(SEVEN_ZIP_SETTING, &executable.to_string_lossy())
         .map_err(|error| error.to_string())?;
-    status(&database).await.map_err(|error| error.to_string())
+    Ok(SevenZipStatus {
+        available: true,
+        path: Some(executable.to_string_lossy().into_owned()),
+        version: Some(version),
+        source: Some("settings".to_owned()),
+    })
 }
 
 pub async fn status(database: &Database) -> Result<SevenZipStatus, SevenZipError> {
     let (path, source) = resolve_executable(database)?;
-    let version = read_version(&path).await.ok();
+    let version = read_version(&path).await?;
     Ok(SevenZipStatus {
         available: true,
         path: Some(path.to_string_lossy().into_owned()),
-        version,
+        version: Some(version),
         source: Some(source),
     })
+}
+
+fn map_get_status(result: Result<SevenZipStatus, SevenZipError>) -> Result<SevenZipStatus, String> {
+    match result {
+        Ok(status) => Ok(status),
+        Err(SevenZipError::NotFound) => Ok(SevenZipStatus {
+            available: false,
+            path: None,
+            version: None,
+            source: None,
+        }),
+        Err(error) => Err(error.to_string()),
+    }
 }
 
 pub fn resolve_executable(database: &Database) -> Result<(PathBuf, String), SevenZipError> {
@@ -445,6 +475,23 @@ async fn read_version(executable: &Path) -> Result<String, SevenZipError> {
     command.arg("i").stdin(Stdio::null());
     configure_no_window(&mut command);
     let output = command.output().await?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let detail = if stderr.trim().is_empty() {
+            stdout.trim()
+        } else {
+            stderr.trim()
+        };
+        return Err(SevenZipError::Compression(format!(
+            "version probe failed{}",
+            if detail.is_empty() {
+                String::new()
+            } else {
+                format!(": {detail}")
+            }
+        )));
+    }
     let text = String::from_utf8_lossy(&output.stdout);
     text.lines()
         .find(|line| line.contains("7-Zip"))
@@ -464,6 +511,26 @@ fn configure_no_window(command: &mut Command) {
 mod tests {
     use super::*;
     use std::sync::Mutex;
+
+    #[test]
+    fn missing_7zip_maps_to_an_unavailable_status() {
+        let status = map_get_status(Err(SevenZipError::NotFound))
+            .expect("missing 7-Zip should be a status, not a command error");
+
+        assert!(!status.available);
+        assert!(status.path.is_none());
+        assert!(status.version.is_none());
+        assert!(status.source.is_none());
+    }
+
+    #[test]
+    fn status_probe_errors_are_not_hidden_as_missing_7zip() {
+        let error = map_get_status(Err(SevenZipError::InvalidPath("bad.exe".to_owned())))
+            .expect_err("invalid paths should remain actionable errors");
+
+        assert!(error.contains("7z.exe"));
+        assert!(error.contains("bad.exe"));
+    }
 
     #[test]
     fn parses_multiple_7zip_progress_updates() {
@@ -522,6 +589,11 @@ mod tests {
         if !executable.is_file() {
             return;
         }
+
+        let version = read_version(&executable)
+            .await
+            .expect("installed 7-Zip version probe");
+        assert!(version.contains("7-Zip"));
 
         let temp = tempfile::tempdir().expect("temporary test directory");
         let source = temp.path().join("source");

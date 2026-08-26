@@ -129,7 +129,7 @@ Although Google Desktop application client secrets cannot be treated as confiden
 ## Compress and upload a folder
 
 1. Run `npm run tauri:dev` and confirm Google Drive is connected in Settings.
-2. Confirm the **7-Zip engine** card reports Ready. A custom `7z.exe` path can be persisted there if automatic discovery fails.
+2. Confirm the **7-Zip engine** card reports Ready. If discovery fails, FileForge opens a setup dialog where you can visit the [official 7-Zip download page](https://www.7-zip.org/download.html), check again after installation, or persist a custom `7z.exe` path.
 3. Open Tasks → New task, choose a source folder, use **Browse Drive** to navigate to the destination, then start **Compress & upload**.
 4. Task Cards receive native progress events and expose Pause/Resume during active work. Pausing while compression is running takes effect before the upload stage; upload pauses between chunks.
 5. A successful task exposes a copyable Drive link and removes its temporary ZIP from the app cache.

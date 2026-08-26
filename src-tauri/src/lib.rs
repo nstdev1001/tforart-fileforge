@@ -63,6 +63,7 @@ pub fn run() {
             google::google_drive_get_metadata,
             google::google_drive_get_web_view_link,
             seven_zip::get_7zip_status,
+            seven_zip::open_7zip_download_page,
             seven_zip::set_7zip_path,
             task_engine::list_tasks,
             task_engine::list_task_logs,
