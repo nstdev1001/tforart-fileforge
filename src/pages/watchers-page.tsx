@@ -20,6 +20,7 @@ import { useEffect, useRef, useState } from "react";
 import { useForm } from "react-hook-form";
 import { z } from "zod";
 
+import { DriveFolderPicker, type DriveFolderSelection } from "@/components/google/drive-folder-picker";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -28,7 +29,6 @@ import { mergeRecordsByUpdatedAt } from "@/lib/record-utils";
 import {
   createWatcher,
   deleteWatcher,
-  listGoogleDriveFolder,
   listWatchers,
   pickFolder,
   restartWatcher,
@@ -36,10 +36,8 @@ import {
 } from "@/lib/tauri";
 import { formatRelativeTime } from "@/lib/utils";
 import { useAppStore } from "@/store/app-store";
-import type { DriveFile } from "@/types/drive";
 import type { FolderWatcher, WatcherStatus } from "@/types/task";
 
-const FOLDER_MIME = "application/vnd.google-apps.folder";
 const EXTENSION_GROUPS = [
   {
     label: "Images",
@@ -79,8 +77,9 @@ const statusVariant: Record<WatcherStatus, "info" | "warning" | "neutral" | "dan
 export function WatchersPage() {
   const removeTask = useAppStore((state) => state.removeTask);
   const [watchers, setWatchers] = useState<FolderWatcher[]>([]);
-  const [folders, setFolders] = useState<DriveFile[]>([]);
   const [showForm, setShowForm] = useState(false);
+  const [showDrivePicker, setShowDrivePicker] = useState(false);
+  const [driveFolderName, setDriveFolderName] = useState("My Drive");
   const [nativeError, setNativeError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [showExtensionPicker, setShowExtensionPicker] = useState(false);
@@ -165,27 +164,6 @@ export function WatchersPage() {
     };
   }, []);
 
-  useEffect(() => {
-    if (!showForm) return;
-
-    let disposed = false;
-    listGoogleDriveFolder()
-      .then((page) => {
-        if (!disposed) {
-          setFolders(page.files.filter((file) => file.mimeType === FOLDER_MIME));
-        }
-      })
-      .catch((error) => {
-        if (!disposed) {
-          setNativeError(error instanceof Error ? error.message : String(error));
-        }
-      });
-
-    return () => {
-      disposed = true;
-    };
-  }, [showForm]);
-
   async function chooseFolder() {
     setNativeError(null);
     try {
@@ -208,6 +186,7 @@ export function WatchersPage() {
       });
       setWatchers((current) => mergeRecordsByUpdatedAt(current, [record]));
       reset();
+      setDriveFolderName("My Drive");
       setShowExtensionPicker(false);
       setShowForm(false);
     } catch (error) {
@@ -238,6 +217,12 @@ export function WatchersPage() {
       selectedExtensions.length === ALL_EXTENSIONS.length ? [] : [...ALL_EXTENSIONS],
       { shouldDirty: true, shouldValidate: true },
     );
+  }
+
+  function chooseDriveFolder(folder: DriveFolderSelection) {
+    setValue("driveFolderId", folder.id, { shouldDirty: true, shouldValidate: true });
+    setDriveFolderName(folder.name);
+    setShowDrivePicker(false);
   }
 
   async function toggleWatcher(watcher: FolderWatcher) {
@@ -280,6 +265,7 @@ export function WatchersPage() {
         <Button onClick={() => {
           setShowForm((value) => !value);
           setShowExtensionPicker(false);
+          setShowDrivePicker(false);
         }}>
           {showForm ? <X className="size-4" /> : <Plus className="size-4" />}
           {showForm ? "Close" : "Add watcher"}
@@ -298,14 +284,17 @@ export function WatchersPage() {
                 Name
                 <Input placeholder="Render output" {...register("name")} />
               </label>
-              <label className="space-y-2 text-xs font-semibold">
-                Google Drive destination
-                <select className="h-10 w-full rounded-xl border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring" {...register("driveFolderId")}>
-                  <option value="root">My Drive</option>
-                  {folders.map((folder) => <option key={folder.id} value={folder.id}>{folder.name}</option>)}
-                </select>
+              <div className="space-y-2 text-xs font-semibold">
+                <label htmlFor="watcher-drive-destination">Google Drive destination</label>
+                <div className="flex gap-2">
+                  <Input id="watcher-drive-destination" readOnly value={driveFolderName} />
+                  <Button type="button" variant="outline" onClick={() => setShowDrivePicker(true)}>
+                    <FolderOpen className="size-4" /> Browse Drive
+                  </Button>
+                </div>
+                <input type="hidden" {...register("driveFolderId")} />
                 {errors.driveFolderId ? <span className="block font-normal text-red-600">{errors.driveFolderId.message}</span> : null}
-              </label>
+              </div>
               <label className="space-y-2 text-xs font-semibold sm:col-span-2">
                 Local folder
                 <div className="flex gap-2">
@@ -449,6 +438,12 @@ export function WatchersPage() {
           </div>
         </Card>
       )}
+
+      <DriveFolderPicker
+        open={showDrivePicker}
+        onClose={() => setShowDrivePicker(false)}
+        onSelect={chooseDriveFolder}
+      />
     </div>
   );
 }

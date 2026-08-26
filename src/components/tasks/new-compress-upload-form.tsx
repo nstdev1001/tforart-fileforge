@@ -4,20 +4,18 @@ import { useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
 import { z } from "zod";
 
+import { DriveFolderPicker, type DriveFolderSelection } from "@/components/google/drive-folder-picker";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import {
   getSevenZipStatus,
-  listGoogleDriveFolder,
   pickFolder,
   startCompressUpload,
   type SevenZipStatus,
 } from "@/lib/tauri";
 import { useAppStore } from "@/store/app-store";
-import type { DriveFile } from "@/types/drive";
 
-const FOLDER_MIME = "application/vnd.google-apps.folder";
 const formSchema = z.object({
   sourcePath: z.string().min(1, "Choose a source folder."),
   archiveName: z.string().max(180),
@@ -29,9 +27,10 @@ type FormValues = z.infer<typeof formSchema>;
 
 export function NewCompressUploadForm({ onClose }: { onClose: () => void }) {
   const upsertTask = useAppStore((state) => state.upsertTask);
-  const [folders, setFolders] = useState<DriveFile[]>([]);
   const [sevenZip, setSevenZip] = useState<SevenZipStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [showDrivePicker, setShowDrivePicker] = useState(false);
+  const [driveFolderName, setDriveFolderName] = useState("My Drive");
   const { register, handleSubmit, setValue, watch, formState: { errors, isSubmitting } } = useForm<FormValues>({
     resolver: zodResolver(formSchema),
     defaultValues: { sourcePath: "", archiveName: "", driveFolderId: "root", makePublic: true },
@@ -40,9 +39,6 @@ export function NewCompressUploadForm({ onClose }: { onClose: () => void }) {
 
   useEffect(() => {
     getSevenZipStatus().then(setSevenZip).catch((reason) => setError(toMessage(reason)));
-    listGoogleDriveFolder()
-      .then((page) => setFolders(page.files.filter((file) => file.mimeType === FOLDER_MIME)))
-      .catch((reason) => setError(toMessage(reason)));
   }, []);
 
   async function chooseFolder() {
@@ -69,8 +65,15 @@ export function NewCompressUploadForm({ onClose }: { onClose: () => void }) {
     }
   }
 
+  function chooseDriveFolder(folder: DriveFolderSelection) {
+    setValue("driveFolderId", folder.id, { shouldDirty: true, shouldValidate: true });
+    setDriveFolderName(folder.name);
+    setShowDrivePicker(false);
+  }
+
   return (
-    <Card className="border-primary/20 shadow-md">
+    <>
+      <Card className="border-primary/20 shadow-md">
       <CardHeader className="flex-row items-start justify-between border-b border-border/70">
         <div>
           <CardTitle className="flex items-center gap-2"><Archive className="size-4 text-primary" /> Compress folder & upload ZIP</CardTitle>
@@ -96,13 +99,16 @@ export function NewCompressUploadForm({ onClose }: { onClose: () => void }) {
           </div>
 
           <div className="grid gap-4 lg:grid-cols-[1fr_auto] lg:items-end">
-            <label className="space-y-2 text-xs font-semibold">
-              Google Drive destination
-              <select className="h-10 w-full rounded-xl border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring" {...register("driveFolderId")}>
-                <option value="root">My Drive</option>
-                {folders.map((folder) => <option key={folder.id} value={folder.id}>{folder.name}</option>)}
-              </select>
-            </label>
+            <div className="space-y-2 text-xs font-semibold">
+              <label htmlFor="upload-drive-destination">Google Drive destination</label>
+              <div className="flex gap-2">
+                <Input id="upload-drive-destination" readOnly value={driveFolderName} />
+                <Button type="button" variant="outline" onClick={() => setShowDrivePicker(true)}>
+                  <FolderOpen className="size-4" /> Browse Drive
+                </Button>
+              </div>
+              <input type="hidden" {...register("driveFolderId")} />
+            </div>
             <label className="flex h-10 items-center gap-2 rounded-xl border border-border px-3 text-xs font-medium">
               <input type="checkbox" className="size-4 accent-[var(--primary)]" {...register("makePublic")} />
               Anyone with link can view
@@ -124,7 +130,13 @@ export function NewCompressUploadForm({ onClose }: { onClose: () => void }) {
           </div>
         </form>
       </CardContent>
-    </Card>
+      </Card>
+      <DriveFolderPicker
+        open={showDrivePicker}
+        onClose={() => setShowDrivePicker(false)}
+        onSelect={chooseDriveFolder}
+      />
+    </>
   );
 }
 

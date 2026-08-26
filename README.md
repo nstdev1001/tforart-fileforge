@@ -19,6 +19,7 @@ Implemented:
 - Access and refresh token storage in the native Windows Credential Manager; tokens are never sent into the React webview or SQLite.
 - Automatic access-token refresh with a safety window and a single-flight refresh lock.
 - Google Drive API commands for connection testing, folder listing, file metadata, and `webViewLink` retrieval.
+- Reusable in-app Google Drive browser with nested navigation, breadcrumbs, filtering, pagination, and folder destination selection.
 - Google Drive connection UI in Settings with account/quota information and a root-folder browser.
 - 7-Zip discovery through SQLite settings, standard Windows install locations, and process PATH.
 - Compress-folder workflow with preflight source sizing, temporary-volume free-space validation, native 7-Zip progress parsing, and cache cleanup.
@@ -129,7 +130,7 @@ Although Google Desktop application client secrets cannot be treated as confiden
 
 1. Run `npm run tauri:dev` and confirm Google Drive is connected in Settings.
 2. Confirm the **7-Zip engine** card reports Ready. A custom `7z.exe` path can be persisted there if automatic discovery fails.
-3. Open Tasks → New task, choose a source folder and Drive destination, then start **Compress & upload**.
+3. Open Tasks → New task, choose a source folder, use **Browse Drive** to navigate to the destination, then start **Compress & upload**.
 4. Task Cards receive native progress events and expose Pause/Resume during active work. Pausing while compression is running takes effect before the upload stage; upload pauses between chunks.
 5. A successful task exposes a copyable Drive link and removes its temporary ZIP from the app cache.
 
@@ -156,7 +157,7 @@ Open History to select any persisted task and inspect its chronological operatio
 ## Watch folder automation
 
 1. Open Watchers and choose **Add watcher**.
-2. Select a local render/output folder and choose the destination Google Drive folder.
+2. Select a local render/output folder and use **Browse Drive** to navigate to the destination Google Drive folder.
 3. Choose a stability delay from 1 to 10 seconds. All supported image and video extensions are selected by default; use the edit button beside **Included extensions** to change the checklist.
 4. FileForge watches the folder recursively. A matching file is queued only after its size and modified timestamp remain unchanged for the full settling delay. `.tmp` and `.part` files are always ignored.
 5. The destination folder link is copyable as soon as monitoring starts. After 30 seconds without a new matching file, the watcher stops accepting events, waits for every queued upload, and then applies public-reader permission to the Drive folder.

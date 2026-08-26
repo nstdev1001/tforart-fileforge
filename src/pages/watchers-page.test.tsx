@@ -167,4 +167,37 @@ describe("WatchersPage", () => {
       includeExtensions: ["jpg", "jpeg", "png", "mp4"],
     })));
   });
+
+  it("uses the folder chosen in the native Drive browser", async () => {
+    vi.mocked(listGoogleDriveFolder)
+      .mockResolvedValueOnce({
+        files: [{
+          id: "renders-folder",
+          name: "Final renders",
+          mimeType: "application/vnd.google-apps.folder",
+          parents: ["root"],
+          shared: false,
+          trashed: false,
+        }],
+      })
+      .mockResolvedValueOnce({ files: [] });
+    vi.mocked(pickFolder).mockResolvedValue("C:\\Projects\\renders");
+    vi.mocked(createWatcher).mockRejectedValue("stop after request inspection");
+    const user = userEvent.setup();
+
+    render(<WatchersPage />);
+    await user.click(screen.getAllByRole("button", { name: "Add watcher" })[0]);
+    await user.click(screen.getByRole("button", { name: "Browse Drive" }));
+    await user.click(await screen.findByRole("button", { name: "Final renders" }));
+    expect(await screen.findByText("This folder is empty")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Choose this folder" }));
+
+    expect(screen.getByLabelText("Google Drive destination")).toHaveValue("Final renders");
+    await user.click(screen.getByRole("button", { name: "Browse" }));
+    await user.click(screen.getByRole("button", { name: "Start watching" }));
+
+    await waitFor(() => expect(createWatcher).toHaveBeenCalledWith(expect.objectContaining({
+      driveFolderId: "renders-folder",
+    })));
+  });
 });
