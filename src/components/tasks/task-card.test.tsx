@@ -3,12 +3,13 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { TaskCard } from "@/components/tasks/task-card";
-import { retryTask } from "@/lib/tauri";
+import { openFolder, retryTask } from "@/lib/tauri";
 import { folderWatcherToTask } from "@/lib/task-utils";
 import { useAppStore } from "@/store/app-store";
 import { TASK_STATUSES, taskStatusLabel, type FolderWatcher, type Task, type TaskStatus } from "@/types/task";
 
 vi.mock("@/lib/tauri", () => ({
+  openFolder: vi.fn(),
   pauseTask: vi.fn(),
   resumeTask: vi.fn(),
   retryTask: vi.fn(),
@@ -109,6 +110,60 @@ describe("TaskCard", () => {
     expect(screen.getByTitle(task.sourcePath)).toHaveClass("truncate");
   });
 
+  it("moves the upload copy action into the task menu", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+    const task = createTask("completed");
+    task.driveWebViewLink = "https://drive.google.com/file/d/uploaded-file/view";
+
+    render(<TaskCard task={task} />);
+
+    expect(screen.queryByRole("button", { name: "Copy link" })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: `More options for ${task.name}` }));
+    expect(screen.getByRole("menu", { name: `Task actions for ${task.name}` })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("menuitem", { name: "Copy link" }));
+
+    expect(writeText).toHaveBeenCalledWith(task.driveWebViewLink);
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+  });
+
+  it("opens the extraction destination from a download task menu", async () => {
+    vi.mocked(openFolder).mockResolvedValue(undefined);
+    const task = createTask("completed");
+    task.kind = "download-extract";
+    task.destinationPath = "C:\\Projects\\example\\extracted";
+
+    render(<TaskCard task={task} />);
+
+    await userEvent.click(screen.getByRole("button", { name: `More options for ${task.name}` }));
+    expect(screen.queryByRole("menuitem", { name: "Copy link" })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("menuitem", { name: "Open folder" }));
+
+    expect(openFolder).toHaveBeenCalledWith(task.destinationPath);
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+  });
+
+  it.each(["compress-upload", "download-extract"] as const)(
+    "deletes a %s task from its menu",
+    async (kind) => {
+      const task = createTask("completed");
+      task.id = `delete-${kind}`;
+      task.kind = kind;
+      if (kind === "download-extract") task.destinationPath = "C:\\Projects\\example";
+      useAppStore.setState({ tasks: [task], removedTaskIds: [] });
+
+      render(<TaskCard task={task} />);
+      await userEvent.click(screen.getByRole("button", { name: `More options for ${task.name}` }));
+      await userEvent.click(screen.getByRole("menuitem", { name: "Delete task" }));
+
+      expect(useAppStore.getState().tasks).toEqual([]);
+      expect(useAppStore.getState().removedTaskIds).toContain(task.id);
+    },
+  );
+
   it("renders watcher counts and copies its folder link while running", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, "clipboard", {
@@ -155,7 +210,9 @@ describe("TaskCard", () => {
     expect(screen.queryByText("0 B / 0 B")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Pause" })).not.toBeInTheDocument();
 
-    await userEvent.click(screen.getByRole("button", { name: "Copy folder link" }));
+    expect(screen.queryByRole("button", { name: "Copy folder link" })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: `More options for ${watcher.name}` }));
+    await userEvent.click(screen.getByRole("menuitem", { name: "Copy folder link" }));
     expect(writeText).toHaveBeenCalledWith(watcher.driveWebViewLink);
   });
 

@@ -51,6 +51,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::pick_folder,
+            commands::open_folder,
             commands::get_disk_free_space,
             commands::get_database_health,
             google::google_auth_status,

@@ -7,14 +7,16 @@ import {
   Download,
   Ellipsis,
   Eye,
+  FolderOpen,
   Pause,
   Play,
   RotateCcw,
   Square,
+  Trash2,
   UploadCloud,
   WifiOff,
 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -22,7 +24,7 @@ import { Card } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { isWatcherAggregateTask, isWatcherChildTask } from "@/lib/task-utils";
 import { cn, formatBytes, formatRelativeTime } from "@/lib/utils";
-import { pauseTask, resumeTask, retryTask } from "@/lib/tauri";
+import { openFolder, pauseTask, resumeTask, retryTask } from "@/lib/tauri";
 import { useAppStore } from "@/store/app-store";
 import { taskStageLabel, taskStatusLabel, type Task, type TaskStatus } from "@/types/task";
 
@@ -53,7 +55,11 @@ function folderNameFromPath(path: string): string {
 
 export function TaskCard({ task }: { task: Task }) {
   const [controlBusy, setControlBusy] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
   const upsertTask = useAppStore((state) => state.upsertTask);
+  const removeTask = useAppStore((state) => state.removeTask);
   const appearance = statusAppearance[task.status];
   const StatusIcon = appearance.icon;
   const KindIcon = kindIcon[task.kind] ?? Archive;
@@ -65,6 +71,27 @@ export function TaskCard({ task }: { task: Task }) {
   const displayProgress = task.status === "completed" ? 100 : task.progress;
   const trackedFolderName = isWatcherAggregate ? folderNameFromPath(task.sourcePath) : undefined;
   const driveFolderName = task.driveFolderName ?? "Unknown folder";
+
+  useEffect(() => {
+    if (!menuOpen) return;
+
+    function closeOnOutsidePointer(event: PointerEvent) {
+      if (!menuRef.current?.contains(event.target as Node)) setMenuOpen(false);
+    }
+
+    function closeOnEscape(event: KeyboardEvent) {
+      if (event.key !== "Escape") return;
+      setMenuOpen(false);
+      menuRef.current?.querySelector<HTMLButtonElement>("button")?.focus();
+    }
+
+    document.addEventListener("pointerdown", closeOnOutsidePointer);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeOnOutsidePointer);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [menuOpen]);
 
   async function togglePause() {
     setControlBusy(true);
@@ -85,7 +112,33 @@ export function TaskCard({ task }: { task: Task }) {
   }
 
   async function copyShareLink() {
-    if (task.driveWebViewLink) await navigator.clipboard.writeText(task.driveWebViewLink);
+    if (!task.driveWebViewLink) return;
+    setMenuOpen(false);
+    setActionError(null);
+    try {
+      await navigator.clipboard.writeText(task.driveWebViewLink);
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  async function openDestinationFolder() {
+    if (!task.destinationPath) return;
+    setMenuOpen(false);
+    setControlBusy(true);
+    setActionError(null);
+    try {
+      await openFolder(task.destinationPath);
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setControlBusy(false);
+    }
+  }
+
+  function deleteTask() {
+    setMenuOpen(false);
+    removeTask(task.id);
   }
 
   return (
@@ -128,9 +181,60 @@ export function TaskCard({ task }: { task: Task }) {
                 <StatusIcon className="mr-1 size-3" />
                 {taskStatusLabel[task.status]}
               </Badge>
-              <Button variant="ghost" size="icon" className="size-7" aria-label={`More options for ${task.name}`}>
-                <Ellipsis className="size-4" />
-              </Button>
+              <div ref={menuRef} className="relative">
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="size-7"
+                  aria-label={`More options for ${task.name}`}
+                  aria-haspopup="menu"
+                  aria-expanded={menuOpen}
+                  onClick={() => setMenuOpen((open) => !open)}
+                >
+                  <Ellipsis className="size-4" />
+                </Button>
+                {menuOpen ? (
+                  <div
+                    role="menu"
+                    aria-label={`Task actions for ${task.name}`}
+                    className="absolute right-0 top-full z-50 mt-1.5 min-w-40 rounded-xl border border-border bg-card p-1.5 shadow-lg"
+                  >
+                    {task.kind !== "download-extract" && task.driveWebViewLink ? (
+                      <button
+                        type="button"
+                        role="menuitem"
+                        className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-xs font-medium text-foreground outline-none transition-colors hover:bg-accent focus:bg-accent"
+                        onClick={copyShareLink}
+                      >
+                        <Copy className="size-3.5" />
+                        {isWatcherAggregate ? "Copy folder link" : "Copy link"}
+                      </button>
+                    ) : null}
+                    {task.kind === "download-extract" && task.destinationPath ? (
+                      <button
+                        type="button"
+                        role="menuitem"
+                        className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-xs font-medium text-foreground outline-none transition-colors hover:bg-accent focus:bg-accent disabled:pointer-events-none disabled:opacity-50"
+                        disabled={controlBusy}
+                        onClick={openDestinationFolder}
+                      >
+                        <FolderOpen className="size-3.5" />
+                        Open folder
+                      </button>
+                    ) : null}
+                    <div role="separator" className="my-1 border-t border-border/70" />
+                    <button
+                      type="button"
+                      role="menuitem"
+                      className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-xs font-medium text-destructive outline-none transition-colors hover:bg-destructive/10 focus:bg-destructive/10"
+                      onClick={deleteTask}
+                    >
+                      <Trash2 className="size-3.5" />
+                      Delete task
+                    </button>
+                  </div>
+                ) : null}
+              </div>
             </div>
           </div>
 
@@ -162,7 +266,11 @@ export function TaskCard({ task }: { task: Task }) {
               {task.retryCount > 0 ? (
                 <span className="flex items-center gap-1"><RotateCcw className="size-3" /> Retry {task.retryCount}</span>
               ) : null}
-              {task.status === "waiting_for_network" ? (
+              {actionError ? (
+                <span role="alert" className="truncate text-red-600 dark:text-red-300">
+                  {actionError}
+                </span>
+              ) : task.status === "waiting_for_network" ? (
                 <span className="truncate text-amber-700 dark:text-amber-300" title={task.errorMessage}>
                   Resumes automatically when the connection returns
                 </span>
@@ -172,13 +280,8 @@ export function TaskCard({ task }: { task: Task }) {
             </div>
             <span className="ml-3 shrink-0">{formatRelativeTime(task.updatedAt)}</span>
           </div>
-          {(canTogglePause || canRetry || task.driveWebViewLink) ? (
+          {(canTogglePause || canRetry) ? (
             <div className="mt-3 flex justify-end gap-2 border-t border-border/60 pt-3">
-              {task.driveWebViewLink ? (
-                <Button variant="outline" size="sm" className="h-7" onClick={copyShareLink}>
-                  <Copy className="size-3" /> {isWatcherAggregate ? "Copy folder link" : "Copy link"}
-                </Button>
-              ) : null}
               {canTogglePause ? (
                 <Button variant="outline" size="sm" className="h-7" disabled={controlBusy} onClick={togglePause}>
                   {task.status === "paused" ? <Play className="size-3" /> : <Pause className="size-3" />}

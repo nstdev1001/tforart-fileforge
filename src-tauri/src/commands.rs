@@ -35,6 +35,17 @@ pub async fn pick_folder() -> Result<Option<String>, String> {
     .map_err(|error| format!("folder picker failed: {error}"))
 }
 
+/// Opens an existing local folder in the native file manager.
+#[tauri::command]
+pub async fn open_folder(path: String) -> Result<(), String> {
+    let canonical_path = canonical_folder_path(Path::new(&path))?;
+
+    tauri::async_runtime::spawn_blocking(move || open::that(canonical_path))
+        .await
+        .map_err(|error| format!("folder opener task failed: {error}"))?
+        .map_err(|error| format!("could not open folder: {error}"))
+}
+
 /// Returns total and free bytes for the volume containing `path`.
 #[tauri::command]
 pub fn get_disk_free_space(path: String) -> Result<DiskSpace, String> {
@@ -42,13 +53,7 @@ pub fn get_disk_free_space(path: String) -> Result<DiskSpace, String> {
 }
 
 fn disk_space_for_path(path: &Path) -> Result<DiskSpace, String> {
-    let canonical_path = path
-        .canonicalize()
-        .map_err(|error| format!("cannot access '{}': {error}", path.display()))?;
-
-    if !canonical_path.is_dir() {
-        return Err(format!("'{}' is not a directory", canonical_path.display()));
-    }
+    let canonical_path = canonical_folder_path(path)?;
 
     let mount_point = volume_root(&canonical_path);
     let total_bytes = fs2::total_space(&canonical_path)
@@ -62,6 +67,18 @@ fn disk_space_for_path(path: &Path) -> Result<DiskSpace, String> {
         total_bytes,
         free_bytes,
     })
+}
+
+fn canonical_folder_path(path: &Path) -> Result<PathBuf, String> {
+    let canonical_path = path
+        .canonicalize()
+        .map_err(|error| format!("cannot access '{}': {error}", path.display()))?;
+
+    if !canonical_path.is_dir() {
+        return Err(format!("'{}' is not a directory", canonical_path.display()));
+    }
+
+    Ok(canonical_path)
 }
 
 fn volume_root(path: &Path) -> PathBuf {
@@ -100,5 +117,13 @@ mod tests {
         let result = disk_space_for_path(temp.path()).expect("disk space");
         assert!(result.total_bytes > 0);
         assert!(result.total_bytes >= result.free_bytes);
+    }
+
+    #[test]
+    fn canonical_folder_path_rejects_files() {
+        let file = tempfile::NamedTempFile::new().expect("temporary file");
+        let result = canonical_folder_path(file.path());
+
+        assert!(result.is_err_and(|error| error.contains("is not a directory")));
     }
 }

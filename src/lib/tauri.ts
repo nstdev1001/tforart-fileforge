@@ -55,6 +55,10 @@ export async function pickFolder(): Promise<string | null> {
   return invoke<string | null>("pick_folder");
 }
 
+export async function openFolder(path: string): Promise<void> {
+  return invoke<void>("open_folder", { path });
+}
+
 export async function getDiskFreeSpace(path: string): Promise<DiskSpace> {
   return invoke<DiskSpace>("get_disk_free_space", { path });
 }
