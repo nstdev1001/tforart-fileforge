@@ -20,6 +20,7 @@ import type { FolderWatcher } from "@/types/task";
 vi.mock("@tauri-apps/api/core", () => ({ isTauri: vi.fn() }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn() }));
 vi.mock("@/lib/tauri", () => ({
+  createGoogleDriveFolder: vi.fn(),
   createWatcher: vi.fn(),
   deleteWatcher: vi.fn(),
   listGoogleDriveFolder: vi.fn(),

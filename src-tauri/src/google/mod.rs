@@ -203,6 +203,23 @@ pub async fn google_drive_list_folder(
 }
 
 #[tauri::command]
+pub async fn google_drive_create_folder(
+    name: String,
+    parent_id: Option<String>,
+    service: State<'_, GoogleService>,
+) -> Result<DriveFile, String> {
+    drive::create_folder(
+        &service.http,
+        &service.token_store,
+        &service.refresh_lock,
+        name,
+        parent_id,
+    )
+    .await
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 pub async fn google_drive_get_metadata(
     file_id: String,
     service: State<'_, GoogleService>,

@@ -6,6 +6,7 @@ import { NewCompressUploadForm } from "@/components/tasks/new-compress-upload-fo
 import { getSevenZipStatus, listGoogleDriveFolder } from "@/lib/tauri";
 
 vi.mock("@/lib/tauri", () => ({
+  createGoogleDriveFolder: vi.fn(),
   getSevenZipStatus: vi.fn(),
   listGoogleDriveFolder: vi.fn(),
   pickFolder: vi.fn(),

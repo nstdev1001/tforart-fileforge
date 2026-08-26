@@ -18,6 +18,7 @@ use crate::bandwidth::BandwidthManager;
 use crate::task_engine::PauseGate;
 
 const DRIVE_API_BASE: &str = "https://www.googleapis.com/drive/v3";
+const FOLDER_MIME_TYPE: &str = "application/vnd.google-apps.folder";
 const FILE_FIELDS: &str =
     "id,name,mimeType,size,modifiedTime,createdTime,parents,webViewLink,shared,trashed,capabilities(canDownload)";
 const UPLOAD_API_URL: &str = "https://www.googleapis.com/upload/drive/v3/files";
@@ -96,6 +97,8 @@ pub enum DriveError {
     OAuth(#[from] OAuthError),
     #[error("Google Drive file ID is invalid")]
     InvalidFileId,
+    #[error("Google Drive folder name must contain 1 to 255 characters")]
+    InvalidFolderName,
     #[error("Google Drive request failed: {0}")]
     Network(#[from] reqwest::Error),
     #[error("local upload file operation failed: {0}")]
@@ -204,6 +207,44 @@ pub async fn list_folder(
         refresh_lock,
         &format!("{DRIVE_API_BASE}/files"),
         &params,
+    )
+    .await
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateFolderRequest<'a> {
+    name: &'a str,
+    mime_type: &'static str,
+    parents: [&'a str; 1],
+}
+
+pub async fn create_folder(
+    http: &reqwest::Client,
+    store: &SecureTokenStore,
+    refresh_lock: &Mutex<()>,
+    name: String,
+    parent_id: Option<String>,
+) -> Result<DriveFile, DriveError> {
+    let parent_id = parent_id.unwrap_or_else(|| "root".to_owned());
+    validate_file_id(&parent_id)?;
+    let name = normalize_folder_name(&name)?;
+    let request = CreateFolderRequest {
+        name,
+        mime_type: FOLDER_MIME_TYPE,
+        parents: [&parent_id],
+    };
+
+    post_json(
+        http,
+        store,
+        refresh_lock,
+        &format!("{DRIVE_API_BASE}/files"),
+        &[
+            ("fields", FILE_FIELDS.to_owned()),
+            ("supportsAllDrives", "true".to_owned()),
+        ],
+        &request,
     )
     .await
 }
@@ -906,6 +947,41 @@ async fn get_json<T: DeserializeOwned>(
     response.json::<T>().await.map_err(DriveError::from)
 }
 
+async fn post_json<T: DeserializeOwned, B: Serialize + ?Sized>(
+    http: &reqwest::Client,
+    store: &SecureTokenStore,
+    refresh_lock: &Mutex<()>,
+    url: &str,
+    params: &[(&str, String)],
+    body: &B,
+) -> Result<T, DriveError> {
+    let bearer_token = access_token(http, store, refresh_lock, false).await?;
+    let mut response = http
+        .post(url)
+        .query(params)
+        .bearer_auth(bearer_token)
+        .json(body)
+        .send()
+        .await?;
+
+    if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+        let access_token = access_token(http, store, refresh_lock, true).await?;
+        response = http
+            .post(url)
+            .query(params)
+            .bearer_auth(access_token)
+            .json(body)
+            .send()
+            .await?;
+    }
+
+    if !response.status().is_success() {
+        return api_error(response).await;
+    }
+
+    response.json::<T>().await.map_err(DriveError::from)
+}
+
 async fn access_token(
     http: &reqwest::Client,
     store: &SecureTokenStore,
@@ -929,6 +1005,15 @@ fn validate_file_id(file_id: &str) -> Result<(), DriveError> {
     }
 }
 
+fn normalize_folder_name(name: &str) -> Result<&str, DriveError> {
+    let name = name.trim();
+    if name.is_empty() || name.chars().count() > 255 || name.contains('\0') {
+        Err(DriveError::InvalidFolderName)
+    } else {
+        Ok(name)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -943,6 +1028,17 @@ mod tests {
     fn drive_ids_reject_query_injection() {
         assert!(validate_file_id("root' or trashed = true").is_err());
         assert!(validate_file_id("../secret").is_err());
+    }
+
+    #[test]
+    fn folder_names_are_trimmed_and_validated() {
+        assert_eq!(
+            normalize_folder_name("  Client delivery  ").unwrap(),
+            "Client delivery"
+        );
+        assert!(normalize_folder_name("   ").is_err());
+        assert!(normalize_folder_name(&"a".repeat(256)).is_err());
+        assert!(normalize_folder_name("bad\0name").is_err());
     }
 
     #[test]

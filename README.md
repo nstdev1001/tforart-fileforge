@@ -19,7 +19,7 @@ Implemented:
 - Access and refresh token storage in the native Windows Credential Manager; tokens are never sent into the React webview or SQLite.
 - Automatic access-token refresh with a safety window and a single-flight refresh lock.
 - Google Drive API commands for connection testing, folder listing, file metadata, and `webViewLink` retrieval.
-- Reusable in-app Google Drive browser with nested navigation, breadcrumbs, filtering, pagination, and folder destination selection.
+- Reusable in-app Google Drive browser with nested navigation, breadcrumbs, filtering, pagination, new-folder creation, and folder destination selection.
 - Google Drive connection UI in Settings with account/quota information and a root-folder browser.
 - 7-Zip discovery through SQLite settings, standard Windows install locations, and process PATH.
 - Compress-folder workflow with preflight source sizing, temporary-volume free-space validation, native 7-Zip progress parsing, and cache cleanup.

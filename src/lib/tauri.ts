@@ -111,6 +111,16 @@ export async function listGoogleDriveFolder(
   });
 }
 
+export async function createGoogleDriveFolder(
+  name: string,
+  parentId?: string,
+): Promise<DriveFile> {
+  return invoke<DriveFile>("google_drive_create_folder", {
+    name,
+    parentId: parentId ?? null,
+  });
+}
+
 export async function getGoogleDriveMetadata(fileId: string): Promise<DriveFile> {
   return invoke<DriveFile>("google_drive_get_metadata", { fileId });
 }

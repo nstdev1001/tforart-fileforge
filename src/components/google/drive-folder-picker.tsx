@@ -5,17 +5,18 @@ import {
   File,
   Folder,
   FolderCheck,
+  FolderPlus,
   LoaderCircle,
   RefreshCw,
   Search,
   X,
 } from "lucide-react";
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type FormEvent } from "react";
 import { createPortal } from "react-dom";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { listGoogleDriveFolder } from "@/lib/tauri";
+import { createGoogleDriveFolder, listGoogleDriveFolder } from "@/lib/tauri";
 import { formatBytes } from "@/lib/utils";
 import type { DriveFile } from "@/types/drive";
 
@@ -40,6 +41,10 @@ export function DriveFolderPicker({ open, onClose, onSelect }: DriveFolderPicker
   const [query, setQuery] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [showNewFolderForm, setShowNewFolderForm] = useState(false);
+  const [newFolderName, setNewFolderName] = useState("");
+  const [creatingFolder, setCreatingFolder] = useState(false);
+  const [createFolderError, setCreateFolderError] = useState<string | null>(null);
   const dialogRef = useRef<HTMLDivElement>(null);
   const requestIdRef = useRef(0);
   const onCloseRef = useRef(onClose);
@@ -94,6 +99,9 @@ export function DriveFolderPicker({ open, onClose, onSelect }: DriveFolderPicker
     const previouslyFocused = document.activeElement as HTMLElement | null;
     setPath([ROOT_FOLDER]);
     setQuery("");
+    setShowNewFolderForm(false);
+    setNewFolderName("");
+    setCreateFolderError(null);
     void loadFolder(ROOT_FOLDER.id);
 
     window.requestAnimationFrame(() => {
@@ -115,6 +123,9 @@ export function DriveFolderPicker({ open, onClose, onSelect }: DriveFolderPicker
     const nextFolder = { id: folder.id, name: folder.name };
     setPath((current) => [...current, nextFolder]);
     setQuery("");
+    setShowNewFolderForm(false);
+    setNewFolderName("");
+    setCreateFolderError(null);
     void loadFolder(nextFolder.id);
   }
 
@@ -123,7 +134,30 @@ export function DriveFolderPicker({ open, onClose, onSelect }: DriveFolderPicker
     const folder = nextPath.at(-1) ?? ROOT_FOLDER;
     setPath(nextPath);
     setQuery("");
+    setShowNewFolderForm(false);
+    setNewFolderName("");
+    setCreateFolderError(null);
     void loadFolder(folder.id);
+  }
+
+  async function createFolder(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const name = newFolderName.trim();
+    if (!name) {
+      setCreateFolderError("Enter a folder name.");
+      return;
+    }
+
+    setCreatingFolder(true);
+    setCreateFolderError(null);
+    try {
+      const folder = await createGoogleDriveFolder(name, currentFolder.id);
+      openFolder(folder);
+    } catch (reason) {
+      setCreateFolderError(toMessage(reason));
+    } finally {
+      setCreatingFolder(false);
+    }
   }
 
   function keepFocusInside(event: React.KeyboardEvent<HTMLDivElement>) {
@@ -223,7 +257,53 @@ export function DriveFolderPicker({ open, onClose, onSelect }: DriveFolderPicker
               </div>
             ))}
           </nav>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={loading || creatingFolder}
+            onClick={() => {
+              setShowNewFolderForm(true);
+              setCreateFolderError(null);
+            }}
+          >
+            <FolderPlus className="size-3.5" /> New folder
+          </Button>
         </div>
+
+        {showNewFolderForm ? (
+          <form className="border-b border-border/70 bg-primary/[0.04] px-5 py-3" onSubmit={createFolder}>
+            <label className="text-xs font-semibold" htmlFor="new-drive-folder-name">New folder name</label>
+            <div className="mt-2 flex gap-2">
+              <Input
+                id="new-drive-folder-name"
+                autoFocus
+                maxLength={255}
+                value={newFolderName}
+                disabled={creatingFolder}
+                onChange={(event) => setNewFolderName(event.target.value)}
+                placeholder="Untitled folder"
+              />
+              <Button
+                type="button"
+                variant="ghost"
+                disabled={creatingFolder}
+                onClick={() => {
+                  setShowNewFolderForm(false);
+                  setNewFolderName("");
+                  setCreateFolderError(null);
+                }}
+              >
+                Cancel
+              </Button>
+              <Button type="submit" disabled={creatingFolder || !newFolderName.trim()}>
+                {creatingFolder ? <LoaderCircle className="size-4 animate-spin" /> : <FolderPlus className="size-4" />}
+                {creatingFolder ? "Creating..." : "Create folder"}
+              </Button>
+            </div>
+            {createFolderError ? <p role="alert" className="mt-2 text-xs text-red-600 dark:text-red-300">{createFolderError}</p> : null}
+          </form>
+        ) : null}
 
         <div className="border-b border-border/70 px-5 py-3">
           <div className="relative">
@@ -312,7 +392,7 @@ export function DriveFolderPicker({ open, onClose, onSelect }: DriveFolderPicker
           </p>
           <div className="flex gap-2">
             <Button type="button" variant="ghost" onClick={onClose}>Cancel</Button>
-            <Button type="button" disabled={loading || Boolean(error)} onClick={() => onSelect(currentFolder)}>
+            <Button type="button" disabled={loading || creatingFolder || Boolean(error)} onClick={() => onSelect(currentFolder)}>
               <FolderCheck className="size-4" /> Choose this folder
             </Button>
           </div>

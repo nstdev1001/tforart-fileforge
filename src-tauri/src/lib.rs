@@ -59,6 +59,7 @@ pub fn run() {
             google::google_oauth_logout,
             google::google_drive_test_connection,
             google::google_drive_list_folder,
+            google::google_drive_create_folder,
             google::google_drive_get_metadata,
             google::google_drive_get_web_view_link,
             seven_zip::get_7zip_status,
