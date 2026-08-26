@@ -8,6 +8,7 @@ import {
   FolderOpen,
   LoaderCircle,
   Pause,
+  Pencil,
   Play,
   Plus,
   Telescope,
@@ -15,7 +16,7 @@ import {
   UploadCloud,
   X,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useForm } from "react-hook-form";
 import { z } from "zod";
 
@@ -39,12 +40,24 @@ import type { DriveFile } from "@/types/drive";
 import type { FolderWatcher, WatcherStatus } from "@/types/task";
 
 const FOLDER_MIME = "application/vnd.google-apps.folder";
+const EXTENSION_GROUPS = [
+  {
+    label: "Images",
+    extensions: ["jpg", "jpeg", "png"],
+  },
+  {
+    label: "Videos",
+    extensions: ["mp4", "mov"],
+  },
+] as const;
+const ALL_EXTENSIONS = EXTENSION_GROUPS.flatMap((group) => [...group.extensions]);
+
 const formSchema = z.object({
   name: z.string().max(100),
   localPath: z.string().min(1, "Choose a local folder."),
   driveFolderId: z.string().min(1, "Choose a Google Drive destination.").max(256),
   settlingDelaySeconds: z.number().int().min(1).max(10),
-  extensions: z.string().min(1, "Enter at least one extension."),
+  extensions: z.array(z.string()).min(1, "Choose at least one extension."),
 });
 
 type WatcherForm = z.infer<typeof formSchema>;
@@ -70,6 +83,8 @@ export function WatchersPage() {
   const [showForm, setShowForm] = useState(false);
   const [nativeError, setNativeError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [showExtensionPicker, setShowExtensionPicker] = useState(false);
+  const extensionPickerRef = useRef<HTMLDivElement>(null);
   const {
     register,
     handleSubmit,
@@ -84,10 +99,32 @@ export function WatchersPage() {
       localPath: "",
       driveFolderId: "root",
       settlingDelaySeconds: 3,
-      extensions: "jpg, jpeg, png, mp4, mov",
+      extensions: ALL_EXTENSIONS,
     },
   });
   const selectedPath = watch("localPath");
+  const selectedExtensions = watch("extensions");
+
+  useEffect(() => {
+    if (!showExtensionPicker) return;
+
+    function closePicker(event: PointerEvent) {
+      if (!extensionPickerRef.current?.contains(event.target as Node)) {
+        setShowExtensionPicker(false);
+      }
+    }
+
+    function closePickerOnEscape(event: KeyboardEvent) {
+      if (event.key === "Escape") setShowExtensionPicker(false);
+    }
+
+    document.addEventListener("pointerdown", closePicker);
+    document.addEventListener("keydown", closePickerOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closePicker);
+      document.removeEventListener("keydown", closePickerOnEscape);
+    };
+  }, [showExtensionPicker]);
 
   useEffect(() => {
     let disposed = false;
@@ -167,13 +204,11 @@ export function WatchersPage() {
         localPath: values.localPath,
         driveFolderId: values.driveFolderId.trim(),
         settlingDelayMs: values.settlingDelaySeconds * 1_000,
-        includeExtensions: values.extensions
-          .split(",")
-          .map((value) => value.trim())
-          .filter(Boolean),
+        includeExtensions: values.extensions,
       });
       setWatchers((current) => mergeRecordsByUpdatedAt(current, [record]));
       reset();
+      setShowExtensionPicker(false);
       setShowForm(false);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -188,6 +223,21 @@ export function WatchersPage() {
         setNativeError(`${message} Could not refresh folder watchers: ${refreshMessage}`);
       }
     }
+  }
+
+  function toggleExtension(extension: string) {
+    const nextExtensions = selectedExtensions.includes(extension)
+      ? selectedExtensions.filter((value) => value !== extension)
+      : ALL_EXTENSIONS.filter((value) => value === extension || selectedExtensions.includes(value));
+    setValue("extensions", nextExtensions, { shouldDirty: true, shouldValidate: true });
+  }
+
+  function toggleAllExtensions() {
+    setValue(
+      "extensions",
+      selectedExtensions.length === ALL_EXTENSIONS.length ? [] : [...ALL_EXTENSIONS],
+      { shouldDirty: true, shouldValidate: true },
+    );
   }
 
   async function toggleWatcher(watcher: FolderWatcher) {
@@ -227,7 +277,10 @@ export function WatchersPage() {
           <p className="text-sm font-semibold">Folder automation</p>
           <p className="mt-1 text-xs text-muted-foreground">Stable matching files enter the shared upload queue automatically.</p>
         </div>
-        <Button onClick={() => setShowForm((value) => !value)}>
+        <Button onClick={() => {
+          setShowForm((value) => !value);
+          setShowExtensionPicker(false);
+        }}>
           {showForm ? <X className="size-4" /> : <Plus className="size-4" />}
           {showForm ? "Close" : "Add watcher"}
         </Button>
@@ -267,11 +320,78 @@ export function WatchersPage() {
                 <Input type="number" min={1} max={10} {...register("settlingDelaySeconds", { valueAsNumber: true })} />
                 {errors.settlingDelaySeconds ? <span className="block font-normal text-red-600">Choose a value from 1 to 10.</span> : null}
               </label>
-              <label className="space-y-2 text-xs font-semibold">
-                Included extensions
-                <Input placeholder="jpg, png, mp4, mov" {...register("extensions")} />
+              <div className="space-y-2 text-xs font-semibold" ref={extensionPickerRef}>
+                <label htmlFor="included-extensions">Included extensions</label>
+                <div className="relative">
+                  <Input
+                    id="included-extensions"
+                    className="pr-11"
+                    readOnly
+                    value={selectedExtensions.map((extension) => `.${extension}`).join(", ")}
+                    placeholder="No file types selected"
+                  />
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="absolute right-0 top-0"
+                    aria-label="Edit included extensions"
+                    aria-expanded={showExtensionPicker}
+                    aria-controls="included-extensions-picker"
+                    aria-haspopup="dialog"
+                    onClick={() => setShowExtensionPicker((value) => !value)}
+                  >
+                    <Pencil className="size-4" />
+                  </Button>
+                  {showExtensionPicker ? (
+                    <div
+                      id="included-extensions-picker"
+                      className="absolute right-0 top-12 z-20 w-full min-w-72 rounded-xl border border-border bg-card p-3 text-card-foreground shadow-xl"
+                      role="dialog"
+                      aria-label="Choose included extensions"
+                    >
+                      <label className="flex cursor-pointer items-center gap-2 rounded-lg px-2 py-2 hover:bg-accent">
+                        <input
+                          className="size-4 accent-primary"
+                          type="checkbox"
+                          ref={(element) => {
+                            if (element) {
+                              element.indeterminate = selectedExtensions.length > 0
+                                && selectedExtensions.length < ALL_EXTENSIONS.length;
+                            }
+                          }}
+                          checked={selectedExtensions.length === ALL_EXTENSIONS.length}
+                          onChange={toggleAllExtensions}
+                        />
+                        <span className="text-xs font-semibold">Select all</span>
+                      </label>
+                      <div className="my-2 border-t border-border/70" />
+                      <div className="grid grid-cols-2 gap-x-4">
+                        {EXTENSION_GROUPS.map((group) => (
+                          <div key={group.label}>
+                            <p className="px-2 pb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">{group.label}</p>
+                            {group.extensions.map((extension) => (
+                              <label key={extension} className="flex cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 font-normal hover:bg-accent">
+                                <input
+                                  className="size-4 accent-primary"
+                                  type="checkbox"
+                                  checked={selectedExtensions.includes(extension)}
+                                  onChange={() => toggleExtension(extension)}
+                                />
+                                <span>.{extension}</span>
+                              </label>
+                            ))}
+                          </div>
+                        ))}
+                      </div>
+                      <div className="mt-3 flex justify-end border-t border-border/70 pt-3">
+                        <Button type="button" size="sm" onClick={() => setShowExtensionPicker(false)}>Done</Button>
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
                 {errors.extensions ? <span className="block font-normal text-red-600">{errors.extensions.message}</span> : null}
-              </label>
+              </div>
               <div className="flex justify-end sm:col-span-2">
                 <Button type="submit" disabled={isSubmitting}>{isSubmitting ? <LoaderCircle className="size-4 animate-spin" /> : <Eye className="size-4" />}{isSubmitting ? "Starting..." : "Start watching"}</Button>
               </div>

@@ -157,7 +157,7 @@ Open History to select any persisted task and inspect its chronological operatio
 
 1. Open Watchers and choose **Add watcher**.
 2. Select a local render/output folder and choose the destination Google Drive folder.
-3. Choose a stability delay from 1 to 10 seconds and enter the allowed extensions, for example `jpg, jpeg, png, mp4, mov`.
+3. Choose a stability delay from 1 to 10 seconds. All supported image and video extensions are selected by default; use the edit button beside **Included extensions** to change the checklist.
 4. FileForge watches the folder recursively. A matching file is queued only after its size and modified timestamp remain unchanged for the full settling delay. `.tmp` and `.part` files are always ignored.
 5. The destination folder link is copyable as soon as monitoring starts. After 30 seconds without a new matching file, the watcher stops accepting events, waits for every queued upload, and then applies public-reader permission to the Drive folder.
 

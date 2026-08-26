@@ -133,4 +133,38 @@ describe("WatchersPage", () => {
     expect(listWatchers).toHaveBeenCalledTimes(2);
     expect(restartWatcher).not.toHaveBeenCalled();
   });
+
+  it("uses a read-only checklist with every extension selected by default", async () => {
+    const user = userEvent.setup();
+
+    render(<WatchersPage />);
+    await user.click(screen.getAllByRole("button", { name: "Add watcher" })[0]);
+
+    expect(screen.getByLabelText("Included extensions")).toHaveAttribute("readonly");
+    await user.click(screen.getByRole("button", { name: "Edit included extensions" }));
+
+    const picker = screen.getByRole("dialog", { name: "Choose included extensions" });
+    expect(picker).toBeInTheDocument();
+    for (const extension of ["Select all", ".jpg", ".jpeg", ".png", ".mp4", ".mov"]) {
+      expect(screen.getByRole("checkbox", { name: extension })).toBeChecked();
+    }
+  });
+
+  it("submits only the extensions selected in the checklist", async () => {
+    vi.mocked(pickFolder).mockResolvedValue("C:\\Projects\\renders");
+    vi.mocked(createWatcher).mockRejectedValue("stop after request inspection");
+    const user = userEvent.setup();
+
+    render(<WatchersPage />);
+    await user.click(screen.getAllByRole("button", { name: "Add watcher" })[0]);
+    await user.click(screen.getByRole("button", { name: "Browse" }));
+    await user.click(screen.getByRole("button", { name: "Edit included extensions" }));
+    await user.click(screen.getByRole("checkbox", { name: ".mov" }));
+    await user.click(screen.getByRole("button", { name: "Done" }));
+    await user.click(screen.getByRole("button", { name: "Start watching" }));
+
+    await waitFor(() => expect(createWatcher).toHaveBeenCalledWith(expect.objectContaining({
+      includeExtensions: ["jpg", "jpeg", "png", "mp4"],
+    })));
+  });
 });
