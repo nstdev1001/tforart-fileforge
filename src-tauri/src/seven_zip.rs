@@ -1,7 +1,7 @@
 use std::{
     path::{Component, Path, PathBuf},
     process::Stdio,
-    sync::Arc,
+    sync::{Arc, Mutex as StdMutex},
 };
 
 use serde::Serialize;
@@ -174,8 +174,9 @@ pub async fn compress_folder(
         .take()
         .ok_or_else(|| SevenZipError::Compression("7-Zip stderr was not captured".to_owned()))?;
 
-    let stdout_reader = read_progress_stream(stdout, on_progress.clone());
-    let stderr_reader = read_progress_stream(stderr, on_progress.clone());
+    let report_progress = monotonic_progress_callback(on_progress);
+    let stdout_reader = read_progress_stream(stdout, report_progress.clone());
+    let stderr_reader = read_progress_stream(stderr, report_progress.clone());
     let ((stdout_result, stdout_text), (stderr_result, stderr_text)) =
         tokio::join!(stdout_reader, stderr_reader);
     stdout_result?;
@@ -191,7 +192,7 @@ pub async fn compress_folder(
         return Err(SevenZipError::Compression(detail.trim().to_owned()));
     }
 
-    on_progress(100);
+    report_progress(100);
     Ok(())
 }
 
@@ -246,9 +247,10 @@ pub async fn extract_archive(
         .stderr
         .take()
         .ok_or_else(|| SevenZipError::Compression("7-Zip stderr was not captured".to_owned()))?;
+    let report_progress = monotonic_progress_callback(on_progress);
     let ((stdout_result, stdout_text), (stderr_result, stderr_text)) = tokio::join!(
-        read_progress_stream(stdout, on_progress.clone()),
-        read_progress_stream(stderr, on_progress.clone())
+        read_progress_stream(stdout, report_progress.clone()),
+        read_progress_stream(stderr, report_progress.clone())
     );
     stdout_result?;
     stderr_result?;
@@ -261,7 +263,7 @@ pub async fn extract_archive(
         };
         return Err(SevenZipError::Compression(detail.trim().to_owned()));
     }
-    on_progress(100);
+    report_progress(100);
     Ok(())
 }
 
@@ -306,13 +308,19 @@ async fn read_progress_stream<R: AsyncRead + Unpin>(
 ) -> (Result<(), std::io::Error>, String) {
     let mut bytes = [0_u8; 4096];
     let mut output = String::new();
+    let mut parser = ProgressParser::default();
     loop {
         match reader.read(&mut bytes).await {
-            Ok(0) => return (Ok(()), output),
+            Ok(0) => {
+                if let Some(progress) = parser.finish() {
+                    on_progress(progress);
+                }
+                return (Ok(()), output);
+            }
             Ok(read) => {
                 let chunk = String::from_utf8_lossy(&bytes[..read]);
                 output.push_str(&chunk);
-                for progress in parse_progress_values(&chunk) {
+                for progress in parser.push(&chunk) {
                     on_progress(progress);
                 }
             }
@@ -321,27 +329,102 @@ async fn read_progress_stream<R: AsyncRead + Unpin>(
     }
 }
 
-fn parse_progress_values(output: &str) -> Vec<u8> {
-    let characters: Vec<char> = output.chars().collect();
-    let mut values = Vec::new();
-    for percent_index in characters
-        .iter()
-        .enumerate()
-        .filter_map(|(index, value)| (*value == '%').then_some(index))
-    {
-        let mut start = percent_index;
-        while start > 0 && characters[start - 1].is_ascii_digit() {
-            start -= 1;
-        }
-        if start < percent_index {
-            let value: String = characters[start..percent_index].iter().collect();
-            if let Ok(value) = value.parse::<u8>() {
-                if value <= 100 {
-                    values.push(value);
+#[derive(Default)]
+struct ProgressParser {
+    state: ProgressParseState,
+}
+
+#[derive(Default)]
+enum ProgressParseState {
+    #[default]
+    RecordStart,
+    Digits(String),
+    AwaitingBoundary(u8),
+    IgnoreRecord,
+}
+
+impl ProgressParser {
+    fn push(&mut self, chunk: &str) -> Vec<u8> {
+        let mut values = Vec::new();
+        for character in chunk.chars() {
+            let is_record_boundary = matches!(character, '\r' | '\n' | '\u{8}');
+            let state = std::mem::take(&mut self.state);
+            self.state = match state {
+                ProgressParseState::RecordStart if is_record_boundary => {
+                    ProgressParseState::RecordStart
                 }
-            }
+                ProgressParseState::RecordStart if character.is_ascii_whitespace() => {
+                    ProgressParseState::RecordStart
+                }
+                ProgressParseState::RecordStart if character.is_ascii_digit() => {
+                    ProgressParseState::Digits(character.to_string())
+                }
+                ProgressParseState::RecordStart => ProgressParseState::IgnoreRecord,
+                ProgressParseState::Digits(_) if is_record_boundary => {
+                    ProgressParseState::RecordStart
+                }
+                ProgressParseState::Digits(mut digits) if character.is_ascii_digit() => {
+                    if digits.len() < 3 {
+                        digits.push(character);
+                        ProgressParseState::Digits(digits)
+                    } else {
+                        ProgressParseState::IgnoreRecord
+                    }
+                }
+                ProgressParseState::Digits(digits) if character == '%' => digits
+                    .parse::<u8>()
+                    .ok()
+                    .filter(|value| *value <= 100)
+                    .map_or(
+                        ProgressParseState::IgnoreRecord,
+                        ProgressParseState::AwaitingBoundary,
+                    ),
+                ProgressParseState::Digits(_) => ProgressParseState::IgnoreRecord,
+                ProgressParseState::AwaitingBoundary(value) if is_record_boundary => {
+                    values.push(value);
+                    ProgressParseState::RecordStart
+                }
+                ProgressParseState::AwaitingBoundary(value) if character.is_ascii_whitespace() => {
+                    values.push(value);
+                    ProgressParseState::IgnoreRecord
+                }
+                ProgressParseState::AwaitingBoundary(_) => ProgressParseState::IgnoreRecord,
+                ProgressParseState::IgnoreRecord if is_record_boundary => {
+                    ProgressParseState::RecordStart
+                }
+                ProgressParseState::IgnoreRecord => ProgressParseState::IgnoreRecord,
+            };
+        }
+        values
+    }
+
+    fn finish(&mut self) -> Option<u8> {
+        match std::mem::take(&mut self.state) {
+            ProgressParseState::AwaitingBoundary(value) => Some(value),
+            _ => None,
         }
     }
+}
+
+fn monotonic_progress_callback(
+    on_progress: Arc<dyn Fn(u8) + Send + Sync>,
+) -> Arc<dyn Fn(u8) + Send + Sync> {
+    let last_progress = Arc::new(StdMutex::new(None::<u8>));
+    Arc::new(move |progress| {
+        if let Ok(mut last_progress) = last_progress.lock() {
+            if last_progress.map_or(true, |previous| progress > previous) {
+                *last_progress = Some(progress);
+                on_progress(progress);
+            }
+        }
+    })
+}
+
+#[cfg(test)]
+fn parse_progress_values(output: &str) -> Vec<u8> {
+    let mut parser = ProgressParser::default();
+    let mut values = parser.push(output);
+    values.extend(parser.finish());
     values
 }
 
@@ -385,7 +468,7 @@ mod tests {
     #[test]
     fn parses_multiple_7zip_progress_updates() {
         assert_eq!(
-            parse_progress_values("  1% foo\r 42% bar\r100%"),
+            parse_progress_values("  1% foo\r 42% bar\u{8}\u{8}100%"),
             vec![1, 42, 100]
         );
     }
@@ -396,6 +479,40 @@ mod tests {
             parse_progress_values("999% and x% and 20"),
             Vec::<u8>::new()
         );
+    }
+
+    #[test]
+    fn ignores_percentages_embedded_in_archive_paths() {
+        assert_eq!(
+            parse_progress_values(
+                "Extracting archive: C:\\renders\\100%.zip\r\n100%.zip\r\n 1% file\r 42% file"
+            ),
+            vec![1, 42]
+        );
+    }
+
+    #[test]
+    fn parses_progress_split_across_stream_reads() {
+        let mut parser = ProgressParser::default();
+        assert_eq!(parser.push(" 1% file\r 4"), vec![1]);
+        assert_eq!(parser.push("2% file\r10"), vec![42]);
+        assert_eq!(parser.push("0%"), Vec::<u8>::new());
+        assert_eq!(parser.finish(), Some(100));
+    }
+
+    #[test]
+    fn emits_only_monotonic_unique_progress() {
+        let values = Arc::new(Mutex::new(Vec::<u8>::new()));
+        let captured = values.clone();
+        let report_progress = monotonic_progress_callback(Arc::new(move |value| {
+            captured.lock().expect("progress lock").push(value);
+        }));
+
+        for value in [1, 1, 0, 42, 40, 42, 100, 100] {
+            report_progress(value);
+        }
+
+        assert_eq!(*values.lock().expect("progress lock"), vec![1, 42, 100]);
     }
 
     #[cfg(target_os = "windows")]

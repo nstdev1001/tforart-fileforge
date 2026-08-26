@@ -182,4 +182,120 @@ describe("useTaskEvents", () => {
 
     expect(useAppStore.getState().tasks).toEqual([]);
   });
+
+  it("registers native listeners before loading the persistence snapshot", async () => {
+    const taskListener = deferred<() => void>();
+    const watcherListener = deferred<() => void>();
+    vi.mocked(listen).mockImplementation(((eventName: string, handler: (event: { payload: unknown }) => void) => {
+      handlers.set(eventName, handler);
+      return eventName === "task-progress" ? taskListener.promise : watcherListener.promise;
+    }) as unknown as typeof listen);
+
+    renderHook(() => useTaskEvents());
+
+    expect(listTasks).not.toHaveBeenCalled();
+    expect(listWatchers).not.toHaveBeenCalled();
+
+    await act(async () => {
+      taskListener.resolve(vi.fn());
+      watcherListener.resolve(vi.fn());
+      await Promise.all([taskListener.promise, watcherListener.promise]);
+    });
+
+    await waitFor(() => {
+      expect(listTasks).toHaveBeenCalledOnce();
+      expect(listWatchers).toHaveBeenCalledOnce();
+    });
+  });
+
+  it("disposes each listener safely when unmounted during registration", async () => {
+    const taskListener = deferred<() => void>();
+    const watcherListener = deferred<() => void>();
+    const disposeTaskListener = vi.fn();
+    const disposeWatcherListener = vi.fn();
+    vi.mocked(listen).mockImplementation(((eventName: string, handler: (event: { payload: unknown }) => void) => {
+      handlers.set(eventName, handler);
+      return eventName === "task-progress" ? taskListener.promise : watcherListener.promise;
+    }) as unknown as typeof listen);
+
+    const { unmount } = renderHook(() => useTaskEvents());
+    await act(async () => {
+      taskListener.resolve(disposeTaskListener);
+      await taskListener.promise;
+    });
+
+    unmount();
+    expect(disposeTaskListener).toHaveBeenCalledOnce();
+
+    await act(async () => {
+      watcherListener.resolve(disposeWatcherListener);
+      await watcherListener.promise;
+    });
+    expect(disposeWatcherListener).toHaveBeenCalledOnce();
+
+    act(() => {
+      handlers.get("task-progress")?.({ payload: regularTask });
+      handlers.get("watcher-progress")?.({ payload: watcher });
+    });
+    expect(useAppStore.getState().tasks).toEqual([]);
+  });
+
+  it("coalesces progress bursts and never lets pending progress replace completion", async () => {
+    const frames: FrameRequestCallback[] = [];
+    vi.stubGlobal("requestAnimationFrame", vi.fn((callback: FrameRequestCallback) => {
+      frames.push(callback);
+      return frames.length;
+    }));
+    vi.stubGlobal("cancelAnimationFrame", vi.fn());
+
+    const { unmount } = renderHook(() => useTaskEvents());
+    await waitFor(() => expect(handlers.has("task-progress")).toBe(true));
+
+    act(() => {
+      handlers.get("task-progress")?.({
+        payload: { ...regularTask, progress: 51, updatedAt: "2026-08-25T08:03:00.000Z" },
+      });
+      handlers.get("task-progress")?.({
+        payload: { ...regularTask, progress: 52, updatedAt: "2026-08-25T08:03:00.100Z" },
+      });
+      handlers.get("task-progress")?.({
+        payload: { ...regularTask, progress: 53, updatedAt: "2026-08-25T08:03:00.200Z" },
+      });
+    });
+
+    expect(useAppStore.getState().tasks.find((task) => task.id === regularTask.id)?.progress).toBe(51);
+    expect(requestAnimationFrame).toHaveBeenCalledOnce();
+
+    act(() => frames.shift()?.(16));
+    expect(useAppStore.getState().tasks.find((task) => task.id === regularTask.id)?.progress).toBe(53);
+
+    act(() => {
+      handlers.get("task-progress")?.({
+        payload: { ...regularTask, progress: 54, updatedAt: "2026-08-25T08:03:00.300Z" },
+      });
+      handlers.get("task-progress")?.({
+        payload: {
+          ...regularTask,
+          status: "completed",
+          stage: "completed",
+          progress: 100,
+          updatedAt: "2026-08-25T08:03:00.400Z",
+        },
+      });
+    });
+
+    expect(useAppStore.getState().tasks.find((task) => task.id === regularTask.id)).toMatchObject({
+      status: "completed",
+      progress: 100,
+    });
+
+    act(() => frames.shift()?.(32));
+    expect(useAppStore.getState().tasks.find((task) => task.id === regularTask.id)).toMatchObject({
+      status: "completed",
+      progress: 100,
+    });
+
+    unmount();
+    vi.unstubAllGlobals();
+  });
 });

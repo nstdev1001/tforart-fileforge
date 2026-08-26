@@ -24,6 +24,7 @@ const UPLOAD_API_URL: &str = "https://www.googleapis.com/upload/drive/v3/files";
 const UPLOAD_CHUNK_SIZE: usize = 8 * 1024 * 1024;
 const LIMITED_UPLOAD_CHUNK_SIZE: usize = 256 * 1024;
 const MAX_UPLOAD_RETRIES: u32 = 5;
+const DOWNLOAD_PROGRESS_INTERVAL: Duration = Duration::from_millis(125);
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -273,6 +274,7 @@ pub async fn download_file(
     output.seek(std::io::SeekFrom::Start(offset)).await?;
     let mut retry_count = 0_u32;
     let started_at = Instant::now();
+    let mut progress = DownloadProgressEmitter::new(started_at);
 
     while offset < total_bytes {
         pause_gate.wait().await;
@@ -302,6 +304,7 @@ pub async fn download_file(
                     && offset >= total_bytes =>
             {
                 output.flush().await?;
+                progress.finish(&on_event, total_bytes);
                 return Ok(());
             }
             Ok(response) if is_retryable_status(response.status()) => {
@@ -348,7 +351,7 @@ pub async fn download_file(
                     bandwidth.throttle_download(chunk.len()).await;
                     output.write_all(&chunk).await?;
                     offset = offset.saturating_add(chunk.len() as u64);
-                    emit_download_progress(&on_event, offset, total_bytes, started_at);
+                    progress.emit_if_due(&on_event, offset, total_bytes);
                 }
                 Ok(None) => break,
                 Err(error) => {
@@ -384,28 +387,96 @@ pub async fn download_file(
     }
 
     output.flush().await?;
+    progress.finish(&on_event, total_bytes);
     Ok(())
 }
 
-fn emit_download_progress(
-    on_event: &Arc<dyn Fn(DownloadEvent) + Send + Sync>,
-    downloaded_bytes: u64,
-    total_bytes: u64,
+struct DownloadProgressEmitter {
     started_at: Instant,
-) {
-    let elapsed = started_at.elapsed().as_secs_f64().max(0.001);
-    let speed = downloaded_bytes as f64 / elapsed;
-    let eta = if speed > 0.0 {
-        ((total_bytes.saturating_sub(downloaded_bytes)) as f64 / speed).ceil() as u64
-    } else {
-        0
-    };
-    on_event(DownloadEvent::Progress {
-        downloaded_bytes,
-        total_bytes,
-        speed_bytes_per_second: speed,
-        eta_seconds: eta,
-    });
+    last_emitted_at: Option<Instant>,
+    last_emitted_bytes: Option<u64>,
+}
+
+impl DownloadProgressEmitter {
+    fn new(started_at: Instant) -> Self {
+        Self {
+            started_at,
+            last_emitted_at: None,
+            last_emitted_bytes: None,
+        }
+    }
+
+    fn emit_if_due(
+        &mut self,
+        on_event: &Arc<dyn Fn(DownloadEvent) + Send + Sync>,
+        downloaded_bytes: u64,
+        total_bytes: u64,
+    ) {
+        self.emit_if_due_at(on_event, downloaded_bytes, total_bytes, Instant::now());
+    }
+
+    fn emit_if_due_at(
+        &mut self,
+        on_event: &Arc<dyn Fn(DownloadEvent) + Send + Sync>,
+        downloaded_bytes: u64,
+        total_bytes: u64,
+        now: Instant,
+    ) -> bool {
+        let is_due = self
+            .last_emitted_at
+            .map(|last_emitted_at| {
+                now.duration_since(last_emitted_at) >= DOWNLOAD_PROGRESS_INTERVAL
+            })
+            .unwrap_or(true);
+        if !is_due {
+            return false;
+        }
+
+        self.emit_at(on_event, downloaded_bytes, total_bytes, now);
+        true
+    }
+
+    fn finish(&mut self, on_event: &Arc<dyn Fn(DownloadEvent) + Send + Sync>, total_bytes: u64) {
+        self.finish_at(on_event, total_bytes, Instant::now());
+    }
+
+    fn finish_at(
+        &mut self,
+        on_event: &Arc<dyn Fn(DownloadEvent) + Send + Sync>,
+        total_bytes: u64,
+        now: Instant,
+    ) -> bool {
+        if self.last_emitted_bytes == Some(total_bytes) {
+            return false;
+        }
+
+        self.emit_at(on_event, total_bytes, total_bytes, now);
+        true
+    }
+
+    fn emit_at(
+        &mut self,
+        on_event: &Arc<dyn Fn(DownloadEvent) + Send + Sync>,
+        downloaded_bytes: u64,
+        total_bytes: u64,
+        now: Instant,
+    ) {
+        let elapsed = now.duration_since(self.started_at).as_secs_f64().max(0.001);
+        let speed = downloaded_bytes as f64 / elapsed;
+        let eta = if speed > 0.0 {
+            ((total_bytes.saturating_sub(downloaded_bytes)) as f64 / speed).ceil() as u64
+        } else {
+            0
+        };
+        on_event(DownloadEvent::Progress {
+            downloaded_bytes,
+            total_bytes,
+            speed_bytes_per_second: speed,
+            eta_seconds: eta,
+        });
+        self.last_emitted_at = Some(now);
+        self.last_emitted_bytes = Some(downloaded_bytes);
+    }
 }
 
 fn notify_download_retry(
@@ -879,6 +950,77 @@ mod tests {
         let range = header::HeaderValue::from_static("bytes=0-8388607");
         assert_eq!(next_offset_from_range(Some(&range)), 8_388_608);
         assert_eq!(next_offset_from_range(None), 0);
+    }
+
+    #[test]
+    fn download_progress_is_limited_to_the_configured_interval() {
+        let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let captured_events = Arc::clone(&events);
+        let on_event: Arc<dyn Fn(DownloadEvent) + Send + Sync> =
+            Arc::new(move |event| captured_events.lock().expect("event lock").push(event));
+        let started_at = Instant::now();
+        let just_before_interval = DOWNLOAD_PROGRESS_INTERVAL
+            .checked_sub(Duration::from_millis(1))
+            .expect("progress interval exceeds one millisecond");
+        let mut progress = DownloadProgressEmitter::new(started_at);
+
+        assert!(progress.emit_if_due_at(&on_event, 10, 100, started_at));
+        assert!(!progress.emit_if_due_at(&on_event, 20, 100, started_at + just_before_interval,));
+        assert!(progress.emit_if_due_at(
+            &on_event,
+            30,
+            100,
+            started_at + DOWNLOAD_PROGRESS_INTERVAL,
+        ));
+
+        let events = events.lock().expect("event lock");
+        assert_eq!(events.len(), 2);
+        assert!(matches!(
+            events[0],
+            DownloadEvent::Progress {
+                downloaded_bytes: 10,
+                ..
+            }
+        ));
+        assert!(matches!(
+            events[1],
+            DownloadEvent::Progress {
+                downloaded_bytes: 30,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn download_progress_forces_one_exact_final_update() {
+        let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let captured_events = Arc::clone(&events);
+        let on_event: Arc<dyn Fn(DownloadEvent) + Send + Sync> =
+            Arc::new(move |event| captured_events.lock().expect("event lock").push(event));
+        let started_at = Instant::now();
+        let mut progress = DownloadProgressEmitter::new(started_at);
+
+        assert!(progress.emit_if_due_at(&on_event, 25, 100, started_at));
+        assert!(!progress.emit_if_due_at(
+            &on_event,
+            75,
+            100,
+            started_at + Duration::from_millis(1),
+        ));
+        assert!(progress.finish_at(&on_event, 100, started_at + Duration::from_millis(1),));
+        assert!(!progress.finish_at(&on_event, 100, started_at + Duration::from_millis(2),));
+
+        let events = events.lock().expect("event lock");
+        assert_eq!(events.len(), 2);
+        assert!(matches!(
+            events[1],
+            DownloadEvent::Progress {
+                downloaded_bytes: 100,
+                total_bytes: 100,
+                eta_seconds: 0,
+                ..
+            }
+        ));
     }
 
     #[test]
