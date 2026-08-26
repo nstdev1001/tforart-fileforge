@@ -298,4 +298,57 @@ describe("useTaskEvents", () => {
     unmount();
     vi.unstubAllGlobals();
   });
+
+  it("coalesces concurrent progress independently without reordering tasks", async () => {
+    const frames: FrameRequestCallback[] = [];
+    const newerTask: Task = {
+      ...regularTask,
+      id: "newer-task",
+      name: "Download project",
+      kind: "download-extract",
+      stage: "downloading",
+      progress: 20,
+      createdAt: "2026-08-25T08:01:00.000Z",
+      updatedAt: "2026-08-25T08:01:00.000Z",
+    };
+    vi.mocked(listTasks).mockResolvedValue([regularTask, newerTask]);
+    vi.stubGlobal("requestAnimationFrame", vi.fn((callback: FrameRequestCallback) => {
+      frames.push(callback);
+      return frames.length;
+    }));
+    vi.stubGlobal("cancelAnimationFrame", vi.fn());
+
+    const { unmount } = renderHook(() => useTaskEvents());
+    await waitFor(() => expect(useAppStore.getState().tasks).toHaveLength(3));
+
+    act(() => {
+      handlers.get("task-progress")?.({
+        payload: { ...regularTask, progress: 51, updatedAt: "2026-08-25T08:03:00.000Z" },
+      });
+      handlers.get("task-progress")?.({
+        payload: { ...newerTask, progress: 21, updatedAt: "2026-08-25T08:03:00.100Z" },
+      });
+      handlers.get("task-progress")?.({
+        payload: { ...newerTask, progress: 22, updatedAt: "2026-08-25T08:03:00.200Z" },
+      });
+      handlers.get("task-progress")?.({
+        payload: { ...regularTask, progress: 52, updatedAt: "2026-08-25T08:03:00.300Z" },
+      });
+    });
+
+    expect(requestAnimationFrame).toHaveBeenCalledOnce();
+    act(() => frames.shift()?.(16));
+
+    const tasks = useAppStore.getState().tasks;
+    expect(tasks.map(({ id }) => id)).toEqual([
+      "newer-task",
+      "regular-task",
+      "watcher:watcher-one",
+    ]);
+    expect(tasks.find(({ id }) => id === "regular-task")?.progress).toBe(52);
+    expect(tasks.find(({ id }) => id === "newer-task")?.progress).toBe(22);
+
+    unmount();
+    vi.unstubAllGlobals();
+  });
 });

@@ -72,7 +72,7 @@ export function useTaskEvents() {
             [
               ...tasks.filter((task) => !isWatcherChildTask(task)),
               ...watchers.map(folderWatcherToTask),
-            ].sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)),
+            ],
           );
         })
         .finally(() => {

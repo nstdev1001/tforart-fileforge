@@ -21,6 +21,18 @@ interface AppState {
   removeTask: (taskId: string) => void;
 }
 
+function mergeOrderedTasks(
+  current: readonly Task[],
+  incoming: readonly Task[],
+  preferIncomingOnEqual = false,
+): Task[] {
+  return mergeRecordsByUpdatedAt(current, incoming, preferIncomingOnEqual)
+    .sort((left, right) => {
+      const createdAtComparison = right.createdAt.localeCompare(left.createdAt);
+      return createdAtComparison || left.id.localeCompare(right.id);
+    });
+}
+
 export const useAppStore = create<AppState>()(
   persist(
     (set) => ({
@@ -35,7 +47,7 @@ export const useAppStore = create<AppState>()(
       setTheme: (theme) => set({ theme }),
       mergeTasks: (tasks) =>
         set((state) => ({
-          tasks: mergeRecordsByUpdatedAt(
+          tasks: mergeOrderedTasks(
             state.tasks,
             tasks.filter((task) => !state.removedTaskIds.includes(task.id)),
           ),
@@ -43,7 +55,7 @@ export const useAppStore = create<AppState>()(
       upsertTask: (task) =>
         set((state) => state.removedTaskIds.includes(task.id)
           ? state
-          : { tasks: mergeRecordsByUpdatedAt(state.tasks, [task], true) }),
+          : { tasks: mergeOrderedTasks(state.tasks, [task], true) }),
       removeTask: (taskId) =>
         set((state) => ({
           tasks: state.tasks.filter((task) => task.id !== taskId),
