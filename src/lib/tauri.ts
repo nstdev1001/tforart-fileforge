@@ -51,6 +51,24 @@ export interface BandwidthPreferences {
   defaultDownloadMbps: number;
 }
 
+export interface OpenFolderError {
+  code: "folder_not_found" | "not_a_directory" | "open_failed";
+  message: string;
+}
+
+export function isOpenFolderError(error: unknown): error is OpenFolderError {
+  if (!error || typeof error !== "object") return false;
+  const candidate = error as Partial<OpenFolderError>;
+  return (
+    typeof candidate.message === "string"
+    && (
+      candidate.code === "folder_not_found"
+      || candidate.code === "not_a_directory"
+      || candidate.code === "open_failed"
+    )
+  );
+}
+
 export async function pickFolder(): Promise<string | null> {
   return invoke<string | null>("pick_folder");
 }

@@ -18,13 +18,14 @@ import {
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
+import { AlertDialog } from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { isWatcherAggregateTask, isWatcherChildTask } from "@/lib/task-utils";
 import { cn, formatBytes, formatRelativeTime } from "@/lib/utils";
-import { openFolder, pauseTask, resumeTask, retryTask } from "@/lib/tauri";
+import { isOpenFolderError, openFolder, pauseTask, resumeTask, retryTask } from "@/lib/tauri";
 import { useAppStore } from "@/store/app-store";
 import { taskStageLabel, taskStatusLabel, type Task, type TaskStatus } from "@/types/task";
 
@@ -57,6 +58,7 @@ export function TaskCard({ task }: { task: Task }) {
   const [controlBusy, setControlBusy] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [missingFolderPath, setMissingFolderPath] = useState<string | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const upsertTask = useAppStore((state) => state.upsertTask);
   const removeTask = useAppStore((state) => state.removeTask);
@@ -127,13 +129,28 @@ export function TaskCard({ task }: { task: Task }) {
     setMenuOpen(false);
     setControlBusy(true);
     setActionError(null);
+    setMissingFolderPath(null);
     try {
       await openFolder(task.destinationPath);
     } catch (error) {
-      setActionError(error instanceof Error ? error.message : String(error));
+      if (isOpenFolderError(error) && error.code === "folder_not_found") {
+        setMissingFolderPath(task.destinationPath);
+      } else {
+        const message = isOpenFolderError(error)
+          ? error.message
+          : error instanceof Error
+            ? error.message
+            : String(error);
+        setActionError(message);
+      }
     } finally {
       setControlBusy(false);
     }
+  }
+
+  function closeMissingFolderDialog() {
+    setMissingFolderPath(null);
+    menuRef.current?.querySelector<HTMLButtonElement>("button")?.focus();
   }
 
   function deleteTask() {
@@ -297,6 +314,21 @@ export function TaskCard({ task }: { task: Task }) {
           ) : null}
         </div>
       </div>
+      <AlertDialog
+        open={missingFolderPath !== null}
+        title="Folder not found"
+        description="We couldn't find this folder. It may have been moved or deleted."
+        onClose={closeMissingFolderDialog}
+      >
+        <div className="mt-4 rounded-xl bg-muted/70 px-3 py-2.5">
+          <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+            Folder path
+          </p>
+          <code className="mt-1 block break-all text-xs text-foreground">
+            {missingFolderPath}
+          </code>
+        </div>
+      </AlertDialog>
     </Card>
   );
 }

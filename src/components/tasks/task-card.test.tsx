@@ -8,7 +8,8 @@ import { folderWatcherToTask } from "@/lib/task-utils";
 import { useAppStore } from "@/store/app-store";
 import { TASK_STATUSES, taskStatusLabel, type FolderWatcher, type Task, type TaskStatus } from "@/types/task";
 
-vi.mock("@/lib/tauri", () => ({
+vi.mock("@/lib/tauri", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/tauri")>()),
   openFolder: vi.fn(),
   pauseTask: vi.fn(),
   resumeTask: vi.fn(),
@@ -144,6 +145,52 @@ describe("TaskCard", () => {
 
     expect(openFolder).toHaveBeenCalledWith(task.destinationPath);
     expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+  });
+
+  it("shows a missing folder modal instead of an inline task error", async () => {
+    const nativeError = {
+      code: "folder_not_found",
+      message: "cannot access '\\\\?\\C:\\Missing\\Extracted': The system cannot find the file specified. (os error 2)",
+    };
+    const destinationPath = "C:\\Missing\\Extracted";
+    vi.mocked(openFolder).mockRejectedValue(nativeError);
+    const task = createTask("completed");
+    task.kind = "download-extract";
+    task.destinationPath = destinationPath;
+
+    render(<TaskCard task={task} />);
+
+    const menuButton = screen.getByRole("button", { name: `More options for ${task.name}` });
+    await userEvent.click(menuButton);
+    await userEvent.click(screen.getByRole("menuitem", { name: "Open folder" }));
+
+    const dialog = await screen.findByRole("alertdialog", { name: "Folder not found" });
+    expect(dialog).toHaveTextContent("We couldn't find this folder. It may have been moved or deleted.");
+    expect(dialog).toHaveTextContent(destinationPath);
+    expect(screen.queryByText(nativeError.message)).not.toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "Close" }));
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+    expect(menuButton).toHaveFocus();
+  });
+
+  it("does not mislabel other folder-opening failures as a missing folder", async () => {
+    vi.mocked(openFolder).mockRejectedValue({
+      code: "open_failed",
+      message: "Windows denied access to the folder",
+    });
+    const task = createTask("completed");
+    task.kind = "download-extract";
+    task.destinationPath = "C:\\Restricted\\Extracted";
+
+    render(<TaskCard task={task} />);
+
+    await userEvent.click(screen.getByRole("button", { name: `More options for ${task.name}` }));
+    await userEvent.click(screen.getByRole("menuitem", { name: "Open folder" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Windows denied access to the folder");
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
   });
 
   it.each(["compress-upload", "download-extract"] as const)(

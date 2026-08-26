@@ -1,4 +1,7 @@
-use std::path::{Path, PathBuf};
+use std::{
+    io::ErrorKind,
+    path::{Path, PathBuf},
+};
 
 use serde::Serialize;
 use tauri::State;
@@ -22,6 +25,40 @@ pub struct DatabaseHealth {
     status: &'static str,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenFolderError {
+    code: &'static str,
+    message: String,
+}
+
+impl OpenFolderError {
+    fn from_io(context: String, error: std::io::Error) -> Self {
+        Self {
+            code: if error.kind() == ErrorKind::NotFound {
+                "folder_not_found"
+            } else {
+                "open_failed"
+            },
+            message: format!("{context}: {error}"),
+        }
+    }
+
+    fn not_a_directory(path: &Path) -> Self {
+        Self {
+            code: "not_a_directory",
+            message: format!("'{}' is not a directory", path.display()),
+        }
+    }
+
+    fn open_failed(message: String) -> Self {
+        Self {
+            code: "open_failed",
+            message,
+        }
+    }
+}
+
 /// Opens the native OS folder picker away from Tauri's async runtime thread.
 #[tauri::command]
 pub async fn pick_folder() -> Result<Option<String>, String> {
@@ -37,13 +74,15 @@ pub async fn pick_folder() -> Result<Option<String>, String> {
 
 /// Opens an existing local folder in the native file manager.
 #[tauri::command]
-pub async fn open_folder(path: String) -> Result<(), String> {
-    let canonical_path = canonical_folder_path(Path::new(&path))?;
+pub async fn open_folder(path: String) -> Result<(), OpenFolderError> {
+    let canonical_path = folder_path_to_open(Path::new(&path))?;
 
     tauri::async_runtime::spawn_blocking(move || open::that(canonical_path))
         .await
-        .map_err(|error| format!("folder opener task failed: {error}"))?
-        .map_err(|error| format!("could not open folder: {error}"))
+        .map_err(|error| {
+            OpenFolderError::open_failed(format!("folder opener task failed: {error}"))
+        })?
+        .map_err(|error| OpenFolderError::from_io("could not open folder".to_owned(), error))
 }
 
 /// Returns total and free bytes for the volume containing `path`.
@@ -76,6 +115,18 @@ fn canonical_folder_path(path: &Path) -> Result<PathBuf, String> {
 
     if !canonical_path.is_dir() {
         return Err(format!("'{}' is not a directory", canonical_path.display()));
+    }
+
+    Ok(canonical_path)
+}
+
+fn folder_path_to_open(path: &Path) -> Result<PathBuf, OpenFolderError> {
+    let canonical_path = path.canonicalize().map_err(|error| {
+        OpenFolderError::from_io(format!("cannot access '{}'", path.display()), error)
+    })?;
+
+    if !canonical_path.is_dir() {
+        return Err(OpenFolderError::not_a_directory(&canonical_path));
     }
 
     Ok(canonical_path)
@@ -125,5 +176,28 @@ mod tests {
         let result = canonical_folder_path(file.path());
 
         assert!(result.is_err_and(|error| error.contains("is not a directory")));
+    }
+
+    #[test]
+    fn folder_path_to_open_classifies_missing_folders() {
+        let result = folder_path_to_open(Path::new(
+            "this-directory-should-not-exist-fileforge-open-folder",
+        ));
+
+        assert_eq!(
+            result.expect_err("missing folder should fail").code,
+            "folder_not_found"
+        );
+    }
+
+    #[test]
+    fn folder_path_to_open_rejects_files_with_a_stable_code() {
+        let file = tempfile::NamedTempFile::new().expect("temporary file");
+        let result = folder_path_to_open(file.path());
+
+        assert_eq!(
+            result.expect_err("file should fail").code,
+            "not_a_directory"
+        );
     }
 }
