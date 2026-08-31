@@ -233,11 +233,27 @@ fn is_transient_token_error_code(code: &str) -> bool {
 }
 
 fn read_required_env(name: &'static str) -> Result<String, OAuthError> {
-    std::env::var(name)
-        .ok()
-        .map(|value| value.trim().to_owned())
-        .filter(|value| !value.is_empty())
-        .ok_or(OAuthError::MissingConfiguration(name))
+    if let Ok(value) = std::env::var(name) {
+        let trimmed = value.trim().to_owned();
+        if !trimmed.is_empty() {
+            return Ok(trimmed);
+        }
+    }
+
+    let compile_time_value = match name {
+        "GOOGLE_CLIENT_ID" => option_env!("GOOGLE_CLIENT_ID"),
+        "GOOGLE_CLIENT_SECRET" => option_env!("GOOGLE_CLIENT_SECRET"),
+        _ => None,
+    };
+
+    if let Some(value) = compile_time_value {
+        let trimmed = value.trim().to_owned();
+        if !trimmed.is_empty() {
+            return Ok(trimmed);
+        }
+    }
+
+    Err(OAuthError::MissingConfiguration(name))
 }
 
 fn parse_auth_url() -> Result<AuthUrl, OAuthError> {
@@ -268,14 +284,14 @@ async fn receive_callback(
     let (status, heading, message) = if result.is_ok() {
         (
             "200 OK",
-            "FileForge is connected",
+            "Tforart FileForge is connected",
             "You can close this browser tab and return to the application.",
         )
     } else {
         (
             "400 Bad Request",
-            "FileForge could not connect",
-            "Return to FileForge and try the Google Drive connection again.",
+            "Tforart FileForge could not connect",
+            "Return to Tforart FileForge and try the Google Drive connection again.",
         )
     };
     let body = format!(

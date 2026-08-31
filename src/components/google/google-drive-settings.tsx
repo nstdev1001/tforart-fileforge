@@ -52,7 +52,7 @@ export function GoogleDriveSettings() {
 
   async function connect() {
     setBusy("connect");
-    setMessage("Complete sign-in in the browser. FileForge will continue automatically.");
+    setMessage("Complete sign-in in the browser. Tforart FileForge will continue automatically.");
     try {
       await connectGoogleDrive();
       setStatus(await getGoogleAuthStatus());

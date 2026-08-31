@@ -64,7 +64,7 @@ impl OpenFolderError {
 pub async fn pick_folder() -> Result<Option<String>, String> {
     tauri::async_runtime::spawn_blocking(|| {
         rfd::FileDialog::new()
-            .set_title("Choose a FileForge folder")
+            .set_title("Choose a Tforart FileForge folder")
             .pick_folder()
             .map(|path| path.to_string_lossy().into_owned())
     })

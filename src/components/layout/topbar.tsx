@@ -9,7 +9,7 @@ const viewTitles: Record<AppView, { title: string; subtitle: string }> = {
   tasks: { title: "Tasks", subtitle: "Track every compression, transfer, and extraction." },
   watchers: { title: "Watchers", subtitle: "Automate uploads from folders you choose." },
   history: { title: "History", subtitle: "Review completed work and task logs." },
-  settings: { title: "Settings", subtitle: "Configure FileForge for your workflow." },
+  settings: { title: "Settings", subtitle: "Configure Tforart FileForge for your workflow." },
 };
 
 export function Topbar() {

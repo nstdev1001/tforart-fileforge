@@ -23,7 +23,7 @@ pub struct GoogleService {
 impl GoogleService {
     pub fn new(bandwidth: crate::bandwidth::BandwidthManager) -> Self {
         let http = reqwest::Client::builder()
-            .user_agent(concat!("FileForge/", env!("CARGO_PKG_VERSION")))
+            .user_agent(concat!("Tforart-FileForge/", env!("CARGO_PKG_VERSION")))
             .connect_timeout(Duration::from_secs(15))
             .timeout(Duration::from_secs(600))
             .build()

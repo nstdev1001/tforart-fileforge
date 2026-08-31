@@ -191,8 +191,8 @@ export function SevenZipSetupDialog({
             </h2>
             <p id={descriptionId} className="mt-1 text-xs leading-relaxed text-muted-foreground">
               {currentPath
-                ? "Choose a different 7z.exe or verify the installation that FileForge is currently using."
-                : "FileForge needs 7-Zip to create and extract ZIP archives. Install it from the official site or configure an existing 7z.exe."}
+                ? "Choose a different 7z.exe or verify the installation that Tforart FileForge is currently using."
+                : "Tforart FileForge needs 7-Zip to create and extract ZIP archives. Install it from the official site or configure an existing 7z.exe."}
             </p>
           </div>
         </div>

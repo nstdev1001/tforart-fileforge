@@ -108,7 +108,7 @@ export function NewCompressUploadForm({ onClose }: { onClose: () => void }) {
       <CardHeader className="flex-row items-start justify-between border-b border-border/70">
         <div>
           <CardTitle className="flex items-center gap-2"><Archive className="size-4 text-primary" /> Compress folder & upload ZIP</CardTitle>
-          <CardDescription>FileForge checks disk space, creates a temporary ZIP, and uploads it in resumable chunks.</CardDescription>
+          <CardDescription>Tforart FileForge checks disk space, creates a temporary ZIP, and uploads it in resumable chunks.</CardDescription>
         </div>
         <Button type="button" variant="ghost" size="icon" className="size-8" onClick={onClose} aria-label="Close form"><X className="size-4" /></Button>
       </CardHeader>
@@ -189,4 +189,3 @@ export function NewCompressUploadForm({ onClose }: { onClose: () => void }) {
     </>
   );
 }
-

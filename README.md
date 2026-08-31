@@ -1,4 +1,4 @@
-# FileForge
+# Tforart FileForge
 
 Windows desktop task manager and file automation foundation built with Tauri v2, Rust, React, TypeScript, Tailwind CSS, shadcn/ui conventions, Zustand, React Hook Form, Zod, and SQLite.
 

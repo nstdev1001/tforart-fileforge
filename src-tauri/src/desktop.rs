@@ -44,13 +44,13 @@ pub struct UpdateDesktopPreferences {
 }
 
 pub fn setup(app: &mut App) -> tauri::Result<()> {
-    let open = MenuItem::with_id(app, "open", "Open FileForge", true, None::<&str>)?;
+    let open = MenuItem::with_id(app, "open", "Open Tforart FileForge", true, None::<&str>)?;
     let pause_all = MenuItem::with_id(app, "pause-all", "Pause All", true, None::<&str>)?;
     let resume_all = MenuItem::with_id(app, "resume-all", "Resume All", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&open, &pause_all, &resume_all, &quit])?;
     let mut builder = TrayIconBuilder::with_id("fileforge-tray")
-        .tooltip("FileForge")
+        .tooltip("Tforart FileForge")
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id.as_ref() {
@@ -184,16 +184,16 @@ pub fn set_desktop_preferences(
 pub fn send_test_notification(app: AppHandle) -> Result<(), String> {
     notify(
         &app,
-        "FileForge notifications are ready",
+        "Tforart FileForge notifications are ready",
         "Task completion and failure alerts will appear here.",
     )
 }
 
 pub fn notify_task_result(app: &AppHandle, task_name: &str, success: bool, detail: Option<&str>) {
     let title = if success {
-        "FileForge task completed"
+        "Tforart FileForge task completed"
     } else {
-        "FileForge task failed"
+        "Tforart FileForge task failed"
     };
     let body = if success {
         task_name.to_owned()

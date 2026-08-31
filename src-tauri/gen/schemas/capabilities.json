@@ -1,1 +1,1 @@
-{"default":{"identifier":"default","description":"Default capability for the FileForge main window","local":true,"windows":["main"],"permissions":["core:default"]}}
+{"default":{"identifier":"default","description":"Default capability for the Tforart FileForge main window","local":true,"windows":["main"],"permissions":["core:default"]}}

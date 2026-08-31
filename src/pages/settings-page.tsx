@@ -111,7 +111,7 @@ export function SettingsPage() {
       <Card>
         <CardHeader className="flex-row items-start gap-3 border-b border-border/70">
           <Palette className="mt-0.5 size-5 text-primary" />
-          <div><CardTitle>Appearance</CardTitle><CardDescription>Choose how FileForge looks on this device.</CardDescription></div>
+          <div><CardTitle>Appearance</CardTitle><CardDescription>Choose how Tforart FileForge looks on this device.</CardDescription></div>
         </CardHeader>
         <CardContent className="grid grid-cols-3 gap-3 pt-5">
           {themes.map((item) => (
@@ -144,7 +144,7 @@ export function SettingsPage() {
               <p className="text-xs font-semibold">Maximum bandwidth</p>
               <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
                 {maximumBandwidth
-                  ? "No FileForge speed limit. Uploads and downloads can use all available bandwidth."
+                  ? "No Tforart FileForge speed limit. Uploads and downloads can use all available bandwidth."
                   : `Default mode shares ${defaultBandwidth.upload} Mbps upload and ${defaultBandwidth.download} Mbps download across active tasks.`}
               </p>
             </div>
@@ -179,12 +179,12 @@ export function SettingsPage() {
           <label className="flex cursor-pointer items-center gap-3 rounded-xl border border-border/70 p-4 hover:bg-accent/60">
             <input type="checkbox" className="size-4 accent-[hsl(var(--primary))]" {...register("autoStart")} />
             <Power className="size-4 text-primary" />
-            <span className="flex-1"><span className="block text-xs font-semibold">Start with Windows</span><span className="mt-0.5 block text-[11px] text-muted-foreground">Launch FileForge hidden in the system tray after sign-in.</span></span>
+            <span className="flex-1"><span className="block text-xs font-semibold">Start with Windows</span><span className="mt-0.5 block text-[11px] text-muted-foreground">Launch Tforart FileForge hidden in the system tray after sign-in.</span></span>
           </label>
           <label className="flex cursor-pointer items-center gap-3 rounded-xl border border-border/70 p-4 hover:bg-accent/60">
             <input type="checkbox" className="size-4 accent-[hsl(var(--primary))]" {...register("closeToTray")} />
             <PanelTopClose className="size-4 text-primary" />
-            <span className="flex-1"><span className="block text-xs font-semibold">Keep running after window closes</span><span className="mt-0.5 block text-[11px] text-muted-foreground">The close button hides FileForge; use Quit from the tray to stop background tasks.</span></span>
+            <span className="flex-1"><span className="block text-xs font-semibold">Keep running after window closes</span><span className="mt-0.5 block text-[11px] text-muted-foreground">The close button hides Tforart FileForge; use Quit from the tray to stop background tasks.</span></span>
           </label>
           <label className="flex cursor-pointer items-center gap-3 rounded-xl border border-border/70 p-4 hover:bg-accent/60">
             <input type="checkbox" className="size-4 accent-[hsl(var(--primary))]" {...register("notificationsEnabled")} />

@@ -1,8 +1,8 @@
 [package]
 name = "fileforge"
 version = "0.1.0"
-description = "Task manager and file automation desktop application"
-authors = ["FileForge contributors"]
+description = "Tforart FileForge - Task manager and file automation desktop application"
+authors = ["Tforart contributors"]
 edition = "2021"
 rust-version = "1.77.2"
 
@@ -11,6 +11,7 @@ name = "fileforge_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
+dotenvy = "0.15"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
