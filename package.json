@@ -12,7 +12,10 @@
     "check": "npm run test && npm run build",
     "tauri": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run-tauri.ps1",
     "tauri:dev": "npm run tauri -- dev",
-    "tauri:build": "npm run tauri -- build"
+    "tauri:build": "npm run tauri -- build",
+    "web:dev": "npm --prefix website run dev",
+    "web:build": "npm --prefix website run build",
+    "web:start": "npm --prefix website start"
   },
   "dependencies": {
     "@hookform/resolvers": "^5.2.1",

@@ -11,4 +11,5 @@ src-tauri/target/
 .idea/
 .vscode/
 *.log
-
+website/.next/
+website/out/
