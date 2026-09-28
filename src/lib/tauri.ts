@@ -77,6 +77,17 @@ export async function openFolder(path: string): Promise<void> {
   return invoke<void>("open_folder", { path });
 }
 
+export async function openUrl(url: string): Promise<void> {
+  if (
+    typeof window !== "undefined" &&
+    Boolean((window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__)
+  ) {
+    return invoke<void>("open_url", { url });
+  } else {
+    window.open(url, "_blank", "noopener,noreferrer");
+  }
+}
+
 export async function getDiskFreeSpace(path: string): Promise<DiskSpace> {
   return invoke<DiskSpace>("get_disk_free_space", { path });
 }

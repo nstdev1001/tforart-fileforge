@@ -85,6 +85,15 @@ pub async fn open_folder(path: String) -> Result<(), OpenFolderError> {
         .map_err(|error| OpenFolderError::from_io("could not open folder".to_owned(), error))
 }
 
+/// Opens a web URL in the system's default browser.
+#[tauri::command]
+pub async fn open_url(url: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || open::that(url))
+        .await
+        .map_err(|error| format!("task failed: {error}"))?
+        .map_err(|error| format!("failed to open URL: {error}"))
+}
+
 /// Returns total and free bytes for the volume containing `path`.
 #[tauri::command]
 pub fn get_disk_free_space(path: String) -> Result<DiskSpace, String> {

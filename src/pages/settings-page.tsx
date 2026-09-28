@@ -1,5 +1,5 @@
 import { zodResolver } from "@hookform/resolvers/zod";
-import { Bell, Check, FolderCog, Gauge, PanelTopClose, Palette, Power, Save, Send, SlidersHorizontal } from "lucide-react";
+import { Bell, Check, ExternalLink, FolderCog, Gauge, Globe, PanelTopClose, Palette, Power, Save, Send, SlidersHorizontal } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
 import { z } from "zod";
@@ -14,6 +14,7 @@ import {
   getDesktopPreferences,
   getBandwidthPreferences,
   getWorkerPoolConfig,
+  openUrl,
   sendTestNotification,
   setDesktopPreferences,
   setBandwidthPreferences,
@@ -198,9 +199,26 @@ export function SettingsPage() {
 
       <UpdaterSettings />
 
-      <div className="flex justify-end">
-        {saveError ? <p className="mr-auto self-center text-xs text-red-600">{saveError}</p> : null}
-        <Button type="submit" disabled={isSubmitting}>{saved ? <Check className="size-4" /> : <Save className="size-4" />}{isSubmitting ? "Saving..." : saved ? "Saved" : "Save changes"}</Button>
+      <div className="flex flex-col gap-3 pt-1 sm:flex-row sm:items-center sm:justify-between">
+        <a
+          href="https://fileforge.tforart.vn/"
+          target="_blank"
+          rel="noopener noreferrer"
+          onClick={(e) => {
+            e.preventDefault();
+            void openUrl("https://fileforge.tforart.vn/");
+          }}
+          className="inline-flex items-center gap-1.5 text-xs text-muted-foreground transition-colors hover:text-primary"
+        >
+          <Globe className="size-3.5" />
+          <span>Website: <strong className="font-semibold text-foreground">https://fileforge.tforart.vn/</strong></span>
+          <ExternalLink className="size-3 opacity-70" />
+        </a>
+
+        <div className="flex items-center gap-2 self-end sm:self-auto">
+          {saveError ? <p className="mr-auto self-center text-xs text-red-600">{saveError}</p> : null}
+          <Button type="submit" disabled={isSubmitting}>{saved ? <Check className="size-4" /> : <Save className="size-4" />}{isSubmitting ? "Saving..." : saved ? "Saved" : "Save changes"}</Button>
+        </div>
       </div>
     </form>
   );
