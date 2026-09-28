@@ -24,10 +24,11 @@ export default function HeroSection() {
 
         {/* Subtitle */}
         <p className="mx-auto mt-5 max-w-2xl text-base leading-relaxed text-gray-600 sm:text-lg md:mt-6">
-          Giải phóng thời gian nén file và tải lên thủ công sau mỗi buổi render.
+          Tối ưu quy trình nén tệp tin, upload và download trực tiếp lên Google
+          Drive.
           <br className="hidden sm:inline" />
-          Tự động phát hiện file mới, nén đa luồng và tải lên với khả năng tự
-          nối lại khi rớt mạng.
+          Tự động phát hiện file, nén đa luồng với khả năng khôi phục khi lỗi
+          mạng.
         </p>
 
         {/* Action Buttons */}
