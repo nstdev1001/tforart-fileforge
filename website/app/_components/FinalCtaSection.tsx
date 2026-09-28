@@ -1,36 +1,49 @@
 "use client";
 
-import { Download, Laptop, ShieldCheck, ExternalLink, Code2 } from "lucide-react";
-import Link from "next/link";
+import Image from "next/image";
+import { Download, Laptop, ShieldCheck } from "lucide-react";
 
 export default function FinalCtaSection() {
   return (
-    <section id="download" className="relative scroll-mt-20 py-20 lg:py-28">
-      <div className="mx-auto max-w-5xl px-4 sm:px-6 lg:px-8">
-        <div className="relative overflow-hidden rounded-3xl border border-black/10 bg-gradient-to-b from-gray-950 to-slate-900 px-6 py-16 text-center text-white shadow-2xl sm:px-12 sm:py-20">
-          {/* Background Ambient Glow */}
-          <div className="pointer-events-none absolute -top-24 left-1/2 -translate-x-1/2 size-96 rounded-full bg-emerald-500/20 blur-3xl" />
+    <section id="download" className="relative scroll-mt-16 py-20 md:scroll-mt-20 md:py-28 lg:py-32">
+      <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
+        <div className="relative overflow-hidden rounded-3xl border border-black/15 bg-black px-6 py-16 text-center text-white shadow-2xl sm:px-12 md:py-24 lg:px-16">
+          {/* Background Image with optimized Next.js Image */}
+          <Image
+            src="/assets/backgrounds/last_content_background.jpg"
+            alt="Nâng cấp quy trình bàn giao media của bạn ngay hôm nay"
+            fill
+            className="pointer-events-none object-cover object-center"
+            sizes="(max-width: 1280px) 100vw, 1280px"
+          />
 
-          <div className="relative z-10">
+          {/* Dark gradient overlay for optimal contrast and legibility */}
+          <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-black/75 via-black/60 to-black/85 backdrop-blur-[1px]" />
+
+          <div className="relative z-10 mx-auto max-w-3xl">
             <div className="inline-flex items-center gap-2 rounded-full border border-emerald-400/30 bg-emerald-950/60 px-4 py-1.5 text-xs font-semibold text-emerald-300">
               <Laptop className="size-3.5" />
               <span>Sẵn sàng cho Windows 10 & Windows 11</span>
             </div>
 
-            <h2 className="mt-6 text-3xl font-black tracking-tight sm:text-5xl">
-              Nâng cấp quy trình bàn giao media của bạn ngay hôm nay
+            {/* Big Headline */}
+            <h2 className="mt-8 text-3xl font-extrabold tracking-tight text-white sm:text-5xl md:text-6xl">
+              <span className="block">Nén nhanh hơn</span>
+              <span className="block text-gray-200">Bàn giao mượt mà hơn.</span>
             </h2>
 
-            <p className="mx-auto mt-4 max-w-2xl text-sm leading-relaxed text-gray-300 sm:text-base">
-              Tải miễn phí Tforart FileForge. Không cài đặt rườm rà, kết nối an toàn với Google Drive cá nhân của bạn và trải nghiệm tốc độ nén vượt trội.
+            {/* Subcopy */}
+            <p className="mx-auto mt-6 max-w-xl text-base leading-relaxed text-gray-300 sm:text-lg">
+              Tải miễn phí Tforart FileForge. Không cài đặt rườm rà, kết nối an toàn với Google Drive và giải phóng 100% thời gian đóng gói file render.
             </p>
 
-            <div className="mt-8 flex flex-col items-center justify-center gap-4 sm:flex-row">
+            {/* CTA buttons */}
+            <div className="mt-10 flex flex-col items-center justify-center gap-4 sm:flex-row">
               <a
                 href="https://github.com/nstdev1001/tforart-fileforge/releases"
                 target="_blank"
                 rel="noopener noreferrer"
-                className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-emerald-500 px-8 py-4 text-base font-bold text-gray-950 shadow-lg shadow-emerald-500/25 transition-all duration-200 hover:-translate-y-0.5 hover:bg-emerald-400 sm:w-auto"
+                className="inline-flex w-full items-center justify-center gap-2 rounded-xl !bg-white px-8 py-4 text-base font-semibold !text-black shadow-lg transition-all duration-200 hover:-translate-y-0.5 hover:!bg-gray-100 sm:w-auto"
               >
                 <Download className="size-5" />
                 <span>Tải FileForge cho Windows (.exe)</span>

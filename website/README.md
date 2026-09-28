@@ -1,11 +1,11 @@
 # Tforart FileForge — Website & Landing Page
 
-Landing page giới thiệu và tải ứng dụng **Tforart FileForge**, đồng bộ nhận diện thương hiệu và phong cách thiết kế với **Tforart Review** (`E:\CODE\tforart-review\frontend`).
+Landing page giới thiệu và tải ứng dụng **Tforart FileForge**, đồng bộ nhận diện thương hiệu và phong cách thiết kế với hệ sinh thái **Tforart** (`https://tforart.vn`).
 
 ## Tính năng trang web
 
 - **Trang chủ (`/`)**:
-  - **Header & Footer** đồng bộ hệ sinh thái Tforart (kèm liên kết Tforart Review & Tforart Production).
+  - **Header & Footer** đồng bộ hệ sinh thái Tforart (kèm liên kết Tforart Production).
   - **Hero Section**: Giới thiệu công nghệ Tauri v2 + Rust, nén 7-Zip & Google Drive Resumable Upload với ảnh chụp màn hình trực tiếp từ app.
   - **Features Grid**: 6 tính năng cốt lõi (7-Zip native engine, chunk 8 MiB, Watchers tự động, Windows Credential Manager, System Tray, SQLite hàng đợi).
   - **Interactive Showcase**: Bộ 4 tab trực quan với hình ảnh thực tế của app (Hàng đợi tác vụ, Cấu hình Drive & 7-Zip, Thư mục Watcher tự động, Chạy ngầm & Băng thông).

@@ -163,7 +163,7 @@ export default function PrivacyPage() {
                 <p><strong>Đơn vị phát triển:</strong> Tforart Production & Đội ngũ sáng tạo Tforart</p>
                 <p><strong>Người đại diện kỹ thuật:</strong> Nguyễn Sơn Tùng</p>
                 <p><strong>Email tiếp nhận:</strong> <a href="mailto:lienhe@tforart.vn" className="text-emerald-700 font-semibold underline">lienhe@tforart.vn</a></p>
-                <p><strong>Hệ sinh thái:</strong> <a href="https://tforart.vn" target="_blank" rel="noopener noreferrer" className="text-emerald-700 underline">https://tforart.vn</a> | <a href="https://review.tforart.vn" target="_blank" rel="noopener noreferrer" className="text-emerald-700 underline">https://review.tforart.vn</a></p>
+                <p><strong>Hệ sinh thái:</strong> <a href="https://tforart.vn" target="_blank" rel="noopener noreferrer" className="text-emerald-700 underline">https://tforart.vn</a> (Tforart Production)</p>
               </div>
             </section>
           </div>

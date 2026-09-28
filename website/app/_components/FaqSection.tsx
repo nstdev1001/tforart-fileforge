@@ -21,8 +21,8 @@ const faqs = [
     a: "Hệ điều hành Windows 10 hoặc Windows 11 (64-bit), Microsoft Edge WebView2 Runtime (đã tích hợp sẵn trên Windows) và công cụ 7-Zip x64 (khuyên dùng phiên bản 24.x trở lên). Nhờ viết bằng Rust và Tauri v2, ứng dụng chỉ tiêu thụ một lượng RAM rất nhỏ (khoảng vài chục MB).",
   },
   {
-    q: "FileForge liên kết với nền tảng Tforart Review như thế nào?",
-    a: "FileForge là công cụ desktop chuyên xử lý nén đa luồng và tải tệp gốc siêu tốc lên Google Drive. Sau khi hoàn thành, bạn có thể copy link Drive để gắn vào nền tảng Tforart Review cho khách hàng và đối tác cùng xem, trao đổi nhận xét và duyệt file trực quan.",
+    q: "FileForge liên kết với hệ sinh thái Tforart Production như thế nào?",
+    a: "FileForge là công cụ desktop chuyên xử lý nén đa luồng và tải tệp gốc siêu tốc lên Google Drive. Sau khi hoàn thành, bạn có thể copy link Drive để bàn giao sản phẩm hoặc tích hợp vào quy trình vận hành và lưu trữ của Tforart Production một cách nhanh chóng, đồng bộ.",
   },
 ];
 
@@ -34,39 +34,42 @@ export default function FaqSection() {
   };
 
   return (
-    <section id="faq" className="relative scroll-mt-20 py-20 lg:py-28">
+    <section
+      id="faq"
+      className="relative scroll-mt-16 py-20 md:scroll-mt-20 md:py-28 lg:py-32"
+    >
       <div className="mx-auto max-w-4xl px-4 sm:px-6 lg:px-8">
         <div className="text-center">
-          <div className="inline-flex items-center gap-2 rounded-full border border-black/10 bg-white/80 px-4 py-1.5 text-xs font-semibold text-gray-800 shadow-2xs backdrop-blur-md">
-            <HelpCircle className="size-3.5 text-emerald-600" />
+          <div className="inline-flex items-center gap-2 rounded-full border border-black/10 bg-white/80 px-3.5 py-1 text-xs font-semibold text-gray-800 backdrop-blur-sm">
+            <HelpCircle className="size-3.5 text-black" />
             <span>Giải đáp thắc mắc</span>
           </div>
-          <h2 className="mt-4 text-3xl font-extrabold tracking-tight text-gray-950 sm:text-4xl">
+          <h2 className="mt-4 text-3xl font-extrabold tracking-tight text-gray-950 sm:text-4xl md:text-5xl">
             Các câu hỏi thường gặp
           </h2>
-          <p className="mx-auto mt-3 max-w-xl text-sm text-gray-600 sm:text-base">
+          <p className="mx-auto mt-4 max-w-2xl text-base leading-relaxed text-gray-600 sm:text-lg">
             Mọi thông tin về độ an toàn, bảo mật dữ liệu và cách hoạt động của Tforart FileForge.
           </p>
         </div>
 
-        <div className="mt-12 space-y-4">
+        <div className="mt-12 space-y-4 md:mt-16">
           {faqs.map((f, i) => {
             const isOpen = openIndex === i;
             return (
               <div
                 key={i}
-                className="overflow-hidden rounded-2xl border border-black/8 bg-white/90 shadow-sm transition-all"
+                className="overflow-hidden rounded-2xl border border-black/10 bg-white/85 shadow-xs backdrop-blur-sm transition-all duration-300 hover:border-black/20 hover:bg-white hover:shadow-lg"
               >
                 <button
                   onClick={() => toggle(i)}
-                  className="flex w-full items-center justify-between p-6 text-left"
+                  className="flex w-full cursor-pointer items-center justify-between p-6 text-left"
                 >
                   <span className="text-base font-bold text-gray-950 sm:text-lg">
                     {f.q}
                   </span>
                   <ChevronDown
                     className={`size-5 text-gray-500 transition-transform duration-200 ${
-                      isOpen ? "rotate-180 text-emerald-600" : ""
+                      isOpen ? "rotate-180 text-black" : ""
                     }`}
                   />
                 </button>

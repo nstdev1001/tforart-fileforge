@@ -8,9 +8,6 @@ import {
   Eye, 
   Sliders, 
   CheckCircle2, 
-  ArrowRight,
-  ShieldCheck,
-  Zap,
   FolderSync
 } from "lucide-react";
 
@@ -86,32 +83,37 @@ export default function ShowcaseSection() {
   const current = showcaseTabs[activeTab];
 
   return (
-    <section id="showcase" className="relative scroll-mt-20 bg-slate-100/60 py-20 lg:py-28">
+    <section
+      id="showcase"
+      className="relative scroll-mt-16 py-20 md:scroll-mt-20 md:py-28 lg:py-32"
+    >
       <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
-        {/* Heading */}
-        <div className="text-center">
-          <div className="inline-flex items-center gap-2 rounded-full border border-black/10 bg-white/80 px-4 py-1.5 text-xs font-semibold text-gray-800 shadow-2xs backdrop-blur-md">
-            <Eye className="size-3.5 text-emerald-600" />
-            <span>Trải nghiệm thực tế</span>
+        {/* Section Header */}
+        <div className="flex flex-col justify-between gap-6 md:flex-row md:items-end">
+          <div className="max-w-2xl">
+            <div className="inline-flex items-center gap-2 rounded-full border border-black/10 bg-white/80 px-3.5 py-1 text-xs font-semibold text-gray-800 backdrop-blur-sm">
+              <Eye className="size-3.5 text-black" />
+              <span>Trải nghiệm sản phẩm</span>
+            </div>
+            <h2 className="mt-4 text-3xl font-extrabold tracking-tight text-gray-950 sm:text-4xl md:text-5xl">
+              From render export to final delivery.
+            </h2>
+            <p className="mt-4 text-base leading-relaxed text-gray-600 sm:text-lg">
+              Giao diện trực quan, đậm chất Desktop Native. Xem thực tế cách Tforart FileForge vận hành hàng chục gigabyte dữ liệu media mỗi ngày một cách nhẹ nhàng và tin cậy.
+            </p>
           </div>
-          <h2 className="mt-4 text-3xl font-extrabold tracking-tight text-gray-950 sm:text-4xl lg:text-5xl">
-            Giao diện trực quan, đậm chất Desktop Native
-          </h2>
-          <p className="mx-auto mt-4 max-w-2xl text-base text-gray-600">
-            Xem thực tế cách Tforart FileForge vận hành hàng chục gigabyte dữ liệu media mỗi ngày một cách nhẹ nhàng và tin cậy.
-          </p>
         </div>
 
         {/* Tab Controls */}
-        <div className="mt-10 flex flex-wrap items-center justify-center gap-2.5 sm:gap-3">
+        <div className="mt-10 flex flex-wrap items-center justify-start gap-2.5 sm:gap-3">
           {showcaseTabs.map((tab, idx) => (
             <button
               key={tab.id}
               onClick={() => setActiveTab(idx)}
-              className={`flex items-center gap-2 rounded-xl px-5 py-3 text-xs font-semibold transition-all duration-200 sm:text-sm ${
+              className={`flex cursor-pointer items-center gap-2 rounded-xl px-5 py-3 text-xs font-semibold transition-all duration-200 sm:text-sm ${
                 activeTab === idx
                   ? "bg-black text-white shadow-md shadow-black/15"
-                  : "border border-black/5 bg-white/80 text-gray-700 hover:bg-white hover:text-black"
+                  : "border border-black/10 bg-white/85 text-gray-700 shadow-xs backdrop-blur-sm hover:bg-white hover:text-black"
               }`}
             >
               {tab.icon}
@@ -121,15 +123,15 @@ export default function ShowcaseSection() {
         </div>
 
         {/* Tab Content Display */}
-        <div className="mt-10 grid items-center gap-10 lg:grid-cols-12">
+        <div className="mt-12 grid items-center gap-10 lg:grid-cols-12 md:mt-16">
           {/* Left Column: Details */}
           <div className="lg:col-span-5">
-            <div className="inline-flex items-center gap-2 rounded-full bg-emerald-100/80 px-3 py-1 text-xs font-bold text-emerald-900">
+            <div className="inline-flex items-center gap-2 rounded-full bg-emerald-50 border border-emerald-200/60 px-3 py-1 text-xs font-bold text-emerald-800">
               <span className="size-2 rounded-full bg-emerald-500 animate-pulse" />
               <span>{current.badge}</span>
             </div>
 
-            <h3 className="mt-4 text-2xl font-bold tracking-tight text-gray-950 sm:text-3xl">
+            <h3 className="mt-4 text-2xl font-extrabold tracking-tight text-gray-950 sm:text-3xl">
               {current.title}
             </h3>
 
@@ -153,7 +155,7 @@ export default function ShowcaseSection() {
 
           {/* Right Column: Screenshot Window */}
           <div className="lg:col-span-7">
-            <div className="relative rounded-2xl border border-black/10 bg-white/80 p-2 shadow-2xl backdrop-blur-xl sm:rounded-3xl sm:p-3">
+            <div className="group overflow-hidden rounded-2xl border border-black/10 bg-white p-2.5 shadow-xl transition-all duration-300 hover:shadow-2xl">
               <div className="mb-2 flex items-center justify-between px-2 pt-1 text-[11px] text-gray-400">
                 <div className="flex items-center gap-1.5">
                   <span className="size-2.5 rounded-full bg-red-400" />
@@ -166,13 +168,13 @@ export default function ShowcaseSection() {
                 </span>
               </div>
 
-              <div className="relative overflow-hidden rounded-xl border border-gray-200/90 bg-gray-50 shadow-inner">
+              <div className="relative overflow-hidden rounded-xl border border-gray-100 bg-gray-50">
                 <Image
                   src={current.image}
                   alt={current.alt}
                   width={1100}
                   height={680}
-                  className="h-auto w-full object-cover transition-opacity duration-300"
+                  className="h-auto w-full object-cover transition-transform duration-500 group-hover:scale-[1.01]"
                 />
               </div>
             </div>

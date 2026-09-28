@@ -1,11 +1,25 @@
 @import url("https://fonts.googleapis.com/css2?family=Lexend:wght@300;400;500;600;700;800;900&display=swap");
 @import "tailwindcss";
 
+@theme {
+  --breakpoint-lg: 1060px;
+}
+
 :root {
-  --background: #f8fafc;
-  --foreground: #0f172a;
+  --background: #ffffff;
+  --foreground: #171717;
   --font-lexend: "Lexend", sans-serif;
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-lexend);
   --primary-accent: #007a55;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #0a0a0a;
+    --foreground: #ededed;
+  }
 }
 
 html {
@@ -26,13 +40,19 @@ body {
   overflow-x: hidden;
 }
 
+@layer base {
+  a {
+    color: inherit;
+    text-decoration: inherit;
+  }
+}
+
 .main-background {
-  background-color: #f1f5f9;
-  background-image: 
-    radial-gradient(at 100% 0%, rgba(16, 185, 129, 0.08) 0px, transparent 50%),
-    radial-gradient(at 0% 100%, rgba(13, 148, 136, 0.06) 0px, transparent 50%),
-    radial-gradient(at 50% 50%, rgba(241, 245, 249, 0.9) 0px, rgba(248, 250, 252, 1) 100%);
-  background-attachment: fixed;
+  background-color: #edf1f4;
+  background-image: url("/assets/backgrounds/main-background.jpg");
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: cover;
 }
 
 /* Glassmorphism utility */
@@ -49,3 +69,4 @@ body {
   -webkit-backdrop-filter: blur(16px);
   border: 1px solid rgba(255, 255, 255, 0.1);
 }
+

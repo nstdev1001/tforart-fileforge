@@ -12,7 +12,7 @@ export const metadata: Metadata = {
     "Tauri v2",
     "Rust desktop app",
     "Media workflow automation",
-    "Tforart Review",
+    "Tforart Production",
   ],
   icons: {
     icon: [
