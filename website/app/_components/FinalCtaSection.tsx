@@ -2,6 +2,7 @@
 
 import Image from "next/image";
 import { Download, Laptop, ShieldCheck } from "lucide-react";
+import Link from "next/link";
 
 export default function FinalCtaSection() {
   return (
@@ -43,7 +44,7 @@ export default function FinalCtaSection() {
 
             {/* CTA buttons */}
             <div className="mt-10 flex flex-col items-center justify-center gap-4 sm:flex-row">
-              <a
+              <Link
                 href="https://github.com/nstdev1001/tforart-fileforge/releases"
                 target="_blank"
                 rel="noopener noreferrer"
@@ -51,9 +52,9 @@ export default function FinalCtaSection() {
               >
                 <Download className="size-5" />
                 <span>Tải FileForge cho Windows (.exe)</span>
-              </a>
+              </Link>
 
-              <a
+              <Link
                 href="https://github.com/nstdev1001/tforart-fileforge"
                 target="_blank"
                 rel="noopener noreferrer"
@@ -67,7 +68,7 @@ export default function FinalCtaSection() {
                   />
                 </svg>
                 <span>Xem GitHub Repo</span>
-              </a>
+              </Link>
             </div>
 
             <div className="mt-8 flex flex-wrap items-center justify-center gap-6 text-xs text-gray-400">

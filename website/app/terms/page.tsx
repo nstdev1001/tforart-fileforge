@@ -103,7 +103,7 @@ export default function TermsPage() {
               <ul className="space-y-2 text-sm text-gray-700">
                 <li className="flex items-start gap-2.5">
                   <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-emerald-600" />
-                  <span><a href="https://policies.google.com/terms" target="_blank" rel="noopener noreferrer" className="font-semibold text-emerald-700 underline">Điều khoản dịch vụ của Google</a> và chính sách sử dụng có thể chấp nhận được của Google Drive.</span>
+                  <span><Link href="https://policies.google.com/terms" target="_blank" rel="noopener noreferrer" className="font-semibold text-emerald-700 underline">Điều khoản dịch vụ của Google</Link> và chính sách sử dụng có thể chấp nhận được của Google Drive.</span>
                 </li>
                 <li className="flex items-start gap-2.5">
                   <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-emerald-600" />
@@ -146,8 +146,8 @@ export default function TermsPage() {
                 Mọi thắc mắc hoặc yêu cầu hỗ trợ pháp lý về điều khoản dịch vụ, xin gửi thư điện tử về:
               </p>
               <div className="mt-3 rounded-2xl bg-gray-50 p-5 border border-gray-200/80 text-sm space-y-1.5">
-                <p><strong>Bộ phận hỗ trợ Tforart:</strong> <a href="mailto:lienhe@tforart.vn" className="text-emerald-700 font-semibold underline">lienhe@tforart.vn</a></p>
-                <p><strong>Trang chủ hệ sinh thái:</strong> <a href="https://tforart.vn" target="_blank" rel="noopener noreferrer" className="text-emerald-700 underline">https://tforart.vn</a></p>
+                <p><strong>Bộ phận hỗ trợ Tforart:</strong> <Link href="mailto:lienhe@tforart.vn" className="text-emerald-700 font-semibold underline">lienhe@tforart.vn</Link></p>
+                <p><strong>Trang chủ hệ sinh thái:</strong> <Link href="https://tforart.vn" target="_blank" rel="noopener noreferrer" className="text-emerald-700 underline">https://tforart.vn</Link></p>
               </div>
             </section>
           </div>

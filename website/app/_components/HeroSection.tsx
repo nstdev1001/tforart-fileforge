@@ -42,8 +42,8 @@ export default function HeroSection() {
               Tải FileForge cho Windows
             </span>
           </Link>
-          <a
-            href="#features"
+          <Link
+            href="/#features"
             onClick={(e) => {
               e.preventDefault();
               const elem = document.getElementById("features");
@@ -56,7 +56,7 @@ export default function HeroSection() {
           >
             <PlayCircle className="size-5 text-emerald-600 shrink-0" />
             <span>Khám phá tính năng</span>
-          </a>
+          </Link>
         </div>
 
         {/* Feature Highlights pills */}

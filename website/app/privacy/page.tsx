@@ -101,14 +101,14 @@ export default function PrivacyPage() {
               </h2>
               <p className="text-sm leading-relaxed text-gray-700">
                 Việc Tforart FileForge sử dụng và truyền thông tin nhận được từ Google API sang bất kỳ ứng dụng nào khác sẽ tuân thủ nghiêm ngặt{" "}
-                <a
+                <Link
                   href="https://developers.google.com/terms/api-services-user-data-policy"
                   target="_blank"
                   rel="noopener noreferrer"
                   className="font-semibold text-emerald-700 underline"
                 >
                   Chính sách Dữ liệu Người dùng Dịch vụ Google API
-                </a>, bao gồm các yêu cầu về <em>Sử dụng có giới hạn (Limited Use)</em>:
+                </Link>, bao gồm các yêu cầu về <em>Sử dụng có giới hạn (Limited Use)</em>:
               </p>
               <ul className="space-y-2 text-sm text-gray-700">
                 <li className="flex items-start gap-2.5">
@@ -162,8 +162,8 @@ export default function PrivacyPage() {
               <div className="mt-4 rounded-2xl bg-gray-50 p-5 border border-gray-200/80 text-sm space-y-2">
                 <p><strong>Đơn vị phát triển:</strong> Tforart Production & Đội ngũ sáng tạo Tforart</p>
                 <p><strong>Người đại diện kỹ thuật:</strong> Nguyễn Sơn Tùng</p>
-                <p><strong>Email tiếp nhận:</strong> <a href="mailto:lienhe@tforart.vn" className="text-emerald-700 font-semibold underline">lienhe@tforart.vn</a></p>
-                <p><strong>Hệ sinh thái:</strong> <a href="https://tforart.vn" target="_blank" rel="noopener noreferrer" className="text-emerald-700 underline">https://tforart.vn</a> (Tforart Production)</p>
+                <p><strong>Email tiếp nhận:</strong> <Link href="mailto:lienhe@tforart.vn" className="text-emerald-700 font-semibold underline">lienhe@tforart.vn</Link></p>
+                <p><strong>Hệ sinh thái:</strong> <Link href="https://tforart.vn" target="_blank" rel="noopener noreferrer" className="text-emerald-700 underline">https://tforart.vn</Link> (Tforart Production)</p>
               </div>
             </section>
           </div>

@@ -70,19 +70,19 @@ export default function NavbarHome() {
               {link.name}
             </Link>
           ))}
-          <a
+          <Link
             href="https://tforart.vn"
             target="_blank"
             rel="noopener noreferrer"
             className="text-sm font-medium text-gray-600 transition-colors hover:text-black"
           >
             Tforart Production
-          </a>
+          </Link>
         </nav>
 
         {/* Desktop Actions */}
         <div className="hidden items-center gap-3 md:flex">
-          <a
+          <Link
             href="https://github.com/nstdev1001/tforart-fileforge"
             target="_blank"
             rel="noopener noreferrer"
@@ -96,7 +96,7 @@ export default function NavbarHome() {
               />
             </svg>
             <span>GitHub</span>
-          </a>
+          </Link>
           <Link
             href="/#download"
             onClick={(e) => handleNavClick(e, "/#download")}
@@ -155,7 +155,7 @@ export default function NavbarHome() {
                   <Download className="size-3.5" />
                   <span>Tải FileForge</span>
                 </Link>
-                <a
+                <Link
                   href="https://github.com/nstdev1001/tforart-fileforge"
                   target="_blank"
                   rel="noopener noreferrer"
@@ -170,7 +170,7 @@ export default function NavbarHome() {
                     />
                   </svg>
                   <span>Xem GitHub Repo</span>
-                </a>
+                </Link>
               </div>
 
               {/* Navigation links below buttons */}
@@ -192,7 +192,7 @@ export default function NavbarHome() {
             <div className="mt-auto flex flex-col gap-2 border-t border-gray-100 p-4 pt-3">
               <div className="flex flex-col space-y-0.5">
 
-                <a
+                <Link
                   href="https://tforart.vn"
                   target="_blank"
                   rel="noopener noreferrer"
@@ -201,7 +201,7 @@ export default function NavbarHome() {
                 >
                   <span>Tforart Production</span>
                   <ExternalLink className="size-3 text-gray-400" />
-                </a>
+                </Link>
                 <Link
                   href="/privacy"
                   onClick={() => setMobileMenuOpen(false)}
@@ -216,13 +216,13 @@ export default function NavbarHome() {
                 >
                   Điều khoản dịch vụ (Terms)
                 </Link>
-                <a
+                <Link
                   href="mailto:lienhe@tforart.vn"
                   onClick={() => setMobileMenuOpen(false)}
                   className="flex items-center rounded-lg px-2.5 py-1.5 text-xs font-medium text-gray-600 transition hover:bg-gray-100 hover:text-black"
                 >
                   Liên hệ (Contact)
-                </a>
+                </Link>
               </div>
             </div>
           </div>

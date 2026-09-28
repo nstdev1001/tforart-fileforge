@@ -74,14 +74,14 @@ export default function FooterHome() {
               Hỏi đáp
             </Link>
 
-            <a
+            <Link
               href="https://tforart.vn"
               target="_blank"
               rel="noopener noreferrer"
               className="!text-gray-600 transition-colors hover:!text-black"
             >
               Tforart Production
-            </a>
+            </Link>
             <Link
               href="/#download"
               onClick={(e) => handleNavClick(e, "/#download")}
@@ -111,12 +111,12 @@ export default function FooterHome() {
             >
               Điều khoản dịch vụ (Terms)
             </Link>
-            <a
+            <Link
               href="mailto:lienhe@tforart.vn"
               className="!text-gray-500 transition-colors hover:!text-gray-900"
             >
               Liên hệ (Contact)
-            </a>
+            </Link>
           </div>
         </div>
       </div>
