@@ -1,7 +1,7 @@
 {
   "name": "tforart-fileforge",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -12,7 +12,7 @@
     "check": "npm run test && npm run build",
     "tauri": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run-tauri.ps1",
     "tauri:dev": "npm run tauri -- dev",
-    "tauri:build": "npm run tauri -- build",
+    "tauri:build": "npm run tauri -- build && node scripts/make-latest-json.cjs",
     "web:dev": "npm --prefix website run dev",
     "web:build": "npm --prefix website run build",
     "web:start": "npm --prefix website start"
@@ -20,6 +20,8 @@
   "dependencies": {
     "@hookform/resolvers": "^5.2.1",
     "@tauri-apps/api": "^2.11.1",
+    "@tauri-apps/plugin-process": "^2.4.0",
+    "@tauri-apps/plugin-updater": "^2.13.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "lucide-react": "^0.541.0",

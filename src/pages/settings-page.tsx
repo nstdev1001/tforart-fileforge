@@ -6,6 +6,7 @@ import { z } from "zod";
 
 import { GoogleDriveSettings } from "@/components/google/google-drive-settings";
 import { SevenZipSettings } from "@/components/settings/seven-zip-settings";
+import { UpdaterSettings } from "@/components/settings/updater-settings";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -194,6 +195,8 @@ export function SettingsPage() {
           </label>
         </CardContent>
       </Card>
+
+      <UpdaterSettings />
 
       <div className="flex justify-end">
         {saveError ? <p className="mr-auto self-center text-xs text-red-600">{saveError}</p> : null}

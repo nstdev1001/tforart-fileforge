@@ -1,8 +1,9 @@
-import { Bell, Moon, Search, Sun } from "lucide-react";
+import { Bell, Moon, Search, Sparkles, Sun } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { type AppView, useAppStore } from "@/store/app-store";
+import { useUpdaterStore } from "@/store/updater-store";
 
 const viewTitles: Record<AppView, { title: string; subtitle: string }> = {
   dashboard: { title: "Good morning", subtitle: "Here's what's happening with your files." },
@@ -16,7 +17,12 @@ export function Topbar() {
   const activeView = useAppStore((state) => state.activeView);
   const theme = useAppStore((state) => state.theme);
   const setTheme = useAppStore((state) => state.setTheme);
+  const status = useUpdaterStore((state) => state.status);
+  const updateInfo = useUpdaterStore((state) => state.updateInfo);
+  const setModalOpen = useUpdaterStore((state) => state.setModalOpen);
   const current = viewTitles[activeView];
+
+  const hasUpdate = (status === "available" || status === "downloaded") && Boolean(updateInfo);
 
   const isDark =
     theme === "dark" ||
@@ -30,6 +36,17 @@ export function Topbar() {
       </div>
 
       <div className="flex items-center gap-2" data-tauri-drag-region="false">
+        {hasUpdate && (
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setModalOpen(true)}
+            className="h-8 gap-1.5 border-primary/30 bg-primary/10 text-primary hover:bg-primary/20 text-xs font-medium animate-pulse"
+          >
+            <Sparkles className="size-3.5" />
+            <span className="hidden sm:inline">Bản mới</span> {updateInfo?.version}
+          </Button>
+        )}
         <div className="relative hidden w-56 xl:block">
           <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
           <Input className="h-9 bg-card pl-9" placeholder="Search tasks..." aria-label="Search tasks" />

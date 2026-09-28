@@ -1,6 +1,6 @@
 [package]
 name = "fileforge"
-version = "0.1.0"
+version = "0.2.0"
 description = "Tforart FileForge - Task manager and file automation desktop application"
 authors = ["Tforart contributors"]
 edition = "2021"
@@ -35,6 +35,10 @@ tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "process"
 url = "2"
 uuid = { version = "1", features = ["v4"] }
 walkdir = "2"
+tauri-plugin-process = "2"
 
 [dev-dependencies]
 tempfile = "3"
+
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+tauri-plugin-updater = "2.13"
