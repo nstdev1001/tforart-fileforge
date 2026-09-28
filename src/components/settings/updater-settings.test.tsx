@@ -9,7 +9,7 @@ describe("UpdaterSettings", () => {
   beforeEach(() => {
     useUpdaterStore.setState({
       status: "idle",
-      currentAppVersion: "0.2.0",
+      currentAppVersion: "0.2.1",
       updateInfo: null,
       errorMessage: null,
       lastCheckedAt: null,
@@ -20,7 +20,7 @@ describe("UpdaterSettings", () => {
     render(<UpdaterSettings />);
 
     expect(screen.getByText("Cập nhật ứng dụng")).toBeInTheDocument();
-    expect(screen.getByText("v0.2.0")).toBeInTheDocument();
+    expect(screen.getByText("v0.2.1")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Kiểm tra cập nhật" })).toBeInTheDocument();
   });
 
