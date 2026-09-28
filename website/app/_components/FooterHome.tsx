@@ -30,9 +30,13 @@ export default function FooterHome() {
           {/* Brand Info */}
           <div className="flex flex-col items-center gap-3 text-center md:items-start md:text-left">
             <Link href="/" className="flex items-center gap-3 transition-opacity hover:opacity-80">
-              <div className="grid size-8 shrink-0 place-items-center rounded-xl bg-[#007a55] text-white shadow-sm">
-                <Layers3 className="size-4" strokeWidth={2.2} />
-              </div>
+              <Image
+                src="/branding/tforart-fileforge-icon.svg"
+                alt="Tforart FileForge Icon"
+                width={32}
+                height={32}
+                className="size-8 shrink-0 rounded-xl object-contain shadow-sm"
+              />
               <Image
                 src="/branding/tforart-fileforge-logo.svg"
                 alt="Tforart FileForge Logo"

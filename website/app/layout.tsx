@@ -15,7 +15,14 @@ export const metadata: Metadata = {
     "Tforart Review",
   ],
   icons: {
-    icon: "/branding/tforart-fileforge-logo.svg",
+    icon: [
+      { url: "/favicon.ico" },
+      { url: "/branding/tforart-fileforge-icon.svg", type: "image/svg+xml" },
+      { url: "/branding/tforart-fileforge-icon-32x32.png", sizes: "32x32", type: "image/png" },
+    ],
+    apple: [
+      { url: "/apple-touch-icon.png", sizes: "180x180", type: "image/png" },
+    ],
   },
 };
 

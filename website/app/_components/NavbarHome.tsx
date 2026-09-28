@@ -56,9 +56,14 @@ export default function NavbarHome() {
           href="/"
           className="flex items-center gap-3 transition-opacity hover:opacity-85"
         >
-          <div className="grid size-9 shrink-0 place-items-center rounded-xl bg-[#007a55] text-white shadow-sm">
-            <Layers3 className="size-5" strokeWidth={2.2} />
-          </div>
+          <Image
+            src="/branding/tforart-fileforge-icon.svg"
+            alt="Tforart FileForge Icon"
+            width={36}
+            height={36}
+            className="size-9 shrink-0 rounded-xl object-contain shadow-sm"
+            priority
+          />
           <Image
             src="/branding/tforart-fileforge-logo.svg"
             alt="Tforart FileForge Logo"

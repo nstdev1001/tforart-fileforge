@@ -1,5 +1,4 @@
-import { Layers3 } from "lucide-react";
-
+import appIcon from "@/assets/tforart-fileforge-icon.svg";
 import fileForgeLogo from "@/assets/tforart-fileforge-logo.svg";
 
 export function BrandMark({ compact = false }: { compact?: boolean }) {
@@ -7,19 +6,28 @@ export function BrandMark({ compact = false }: { compact?: boolean }) {
     return (
       <div
         aria-label="Tforart FileForge"
-        className="grid size-9 shrink-0 place-items-center rounded-xl bg-primary text-primary-foreground shadow-sm"
+        className="grid size-9 shrink-0 place-items-center rounded-xl overflow-hidden shadow-sm"
         role="img"
       >
-        <Layers3 aria-hidden="true" className="size-5" strokeWidth={2.2} />
+        <img
+          alt="Tforart FileForge"
+          className="size-9 object-contain"
+          src={appIcon}
+        />
       </div>
     );
   }
 
   return (
-    <div className="flex h-9 items-center">
+    <div className="flex h-9 items-center gap-2.5">
+      <img
+        alt="Tforart FileForge Icon"
+        className="size-8 shrink-0 rounded-lg object-contain shadow-xs"
+        src={appIcon}
+      />
       <img
         alt="Tforart FileForge"
-        className="block w-full max-w-46 dark:invert"
+        className="block w-full max-w-36 dark:invert"
         src={fileForgeLogo}
       />
     </div>
