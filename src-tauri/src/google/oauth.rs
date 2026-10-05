@@ -18,7 +18,7 @@ use super::secure_store::{SecureStoreError, SecureTokenStore, StoredToken};
 
 const AUTH_URL: &str = "https://accounts.google.com/o/oauth2/v2/auth";
 const TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
-const DRIVE_SCOPE: &str = "https://www.googleapis.com/auth/drive";
+const DRIVE_SCOPE: &str = "https://www.googleapis.com/auth/drive.file";
 const CALLBACK_TIMEOUT: Duration = Duration::from_secs(300);
 const EXPIRY_SAFETY_SECONDS: u64 = 60;
 
