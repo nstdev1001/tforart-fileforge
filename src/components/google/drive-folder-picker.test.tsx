@@ -3,10 +3,17 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { DriveFolderPicker } from "@/components/google/drive-folder-picker";
-import { createGoogleDriveFolder, listGoogleDriveFolder } from "@/lib/tauri";
+import {
+  connectGoogleDrive,
+  createGoogleDriveFolder,
+  disconnectGoogleDrive,
+  listGoogleDriveFolder,
+} from "@/lib/tauri";
 import type { DriveFile } from "@/types/drive";
 
 vi.mock("@/lib/tauri", () => ({
+  connectGoogleDrive: vi.fn(),
+  disconnectGoogleDrive: vi.fn(),
   createGoogleDriveFolder: vi.fn(),
   listGoogleDriveFolder: vi.fn(),
 }));
@@ -54,6 +61,39 @@ describe("DriveFolderPicker", () => {
 
     await user.click(screen.getByRole("button", { name: "Choose this folder" }));
     expect(onSelect).toHaveBeenCalledWith({ id: "projects", name: "Projects" });
+  });
+
+  it("signs out an expired session and reconnects from the picker", async () => {
+    vi.mocked(listGoogleDriveFolder)
+      .mockRejectedValueOnce("token exchange failed: invalid_grant: Token has been expired or revoked.")
+      .mockResolvedValueOnce({ files: [folder("projects", "Projects")] });
+    vi.mocked(disconnectGoogleDrive).mockResolvedValue(undefined);
+    vi.mocked(connectGoogleDrive).mockResolvedValue({} as never);
+    const user = userEvent.setup();
+
+    render(<DriveFolderPicker open onClose={vi.fn()} onSelect={vi.fn()} />);
+
+    expect(await screen.findByText("Google Drive connection lost")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Try again" }));
+    expect(disconnectGoogleDrive).toHaveBeenCalledTimes(1);
+    expect(listGoogleDriveFolder).toHaveBeenCalledTimes(1);
+
+    await user.click(await screen.findByRole("button", { name: "Connect Google Drive" }));
+    expect(connectGoogleDrive).toHaveBeenCalledTimes(1);
+    expect(await screen.findByRole("button", { name: "Projects" })).toBeInTheDocument();
+  });
+
+  it("only reloads on non-auth errors", async () => {
+    vi.mocked(listGoogleDriveFolder)
+      .mockRejectedValueOnce("network unreachable")
+      .mockResolvedValueOnce({ files: [] });
+    const user = userEvent.setup();
+
+    render(<DriveFolderPicker open onClose={vi.fn()} onSelect={vi.fn()} />);
+
+    await user.click(await screen.findByRole("button", { name: "Try again" }));
+    expect(disconnectGoogleDrive).not.toHaveBeenCalled();
+    expect(await screen.findByText("This folder is empty")).toBeInTheDocument();
   });
 
   it("appends paginated folders without duplicates", async () => {
