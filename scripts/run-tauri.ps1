@@ -42,8 +42,10 @@ if (Test-Path -LiteralPath $phaseEnvFile) {
     }
 
     if ($env:TAURI_SIGNING_PRIVATE_KEY_PATH -and -not $env:TAURI_SIGNING_PRIVATE_KEY) {
-        $env:TAURI_SIGNING_PRIVATE_KEY = $env:TAURI_SIGNING_PRIVATE_KEY_PATH
-        [Environment]::SetEnvironmentVariable("TAURI_SIGNING_PRIVATE_KEY", $env:TAURI_SIGNING_PRIVATE_KEY_PATH, "Process")
+        # Tauri expects the key contents (not a path) in TAURI_SIGNING_PRIVATE_KEY.
+        $phaseKey = (Get-Content -LiteralPath $env:TAURI_SIGNING_PRIVATE_KEY_PATH -Raw).Trim()
+        $env:TAURI_SIGNING_PRIVATE_KEY = $phaseKey
+        [Environment]::SetEnvironmentVariable("TAURI_SIGNING_PRIVATE_KEY", $phaseKey, "Process")
     }
 }
 
