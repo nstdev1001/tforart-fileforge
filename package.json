@@ -12,6 +12,7 @@
     "check": "npm run test && npm run build",
     "tauri": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run-tauri.ps1",
     "tauri:dev": "npm run tauri -- dev",
+    "deploy:app": "node scripts/deploy-app.cjs",
     "tauri:build": "npm run tauri -- build && node scripts/make-latest-json.cjs",
     "web:dev": "npm --prefix website run dev",
     "web:build": "npm --prefix website run build",
