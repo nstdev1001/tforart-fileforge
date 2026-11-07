@@ -34,12 +34,12 @@ const statusAppearance: Record<
   { badge: "neutral" | "info" | "warning" | "danger" | "success"; icon: typeof Clock3; color: string }
 > = {
   queued: { badge: "neutral", icon: Clock3, color: "bg-muted-foreground" },
-  running: { badge: "info", icon: Play, color: "bg-sky-500" },
+  running: { badge: "info", icon: Play, color: "bg-primary" },
   waiting_for_network: { badge: "warning", icon: WifiOff, color: "bg-amber-500" },
   paused: { badge: "warning", icon: Pause, color: "bg-amber-500" },
   stopped: { badge: "neutral", icon: Square, color: "bg-muted-foreground" },
   failed: { badge: "danger", icon: CircleAlert, color: "bg-red-500" },
-  completed: { badge: "success", icon: Check, color: "bg-emerald-500" },
+  completed: { badge: "success", icon: Check, color: "bg-primary" },
 };
 
 const kindIcon = {

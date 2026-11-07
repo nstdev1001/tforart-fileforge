@@ -145,7 +145,7 @@ export function HistoryPage() {
                 <Progress
                   value={selectedWatcher.status === "completed" ? 100 : selectedWatcher.progress}
                   label="Watcher progress"
-                  indicatorClassName={selectedWatcher.status === "failed" ? "bg-red-500" : "bg-emerald-500"}
+                  indicatorClassName={selectedWatcher.status === "failed" ? "bg-red-500" : "bg-primary"}
                 />
               </div>
               {selectedWatcher.errorMessage ? (
