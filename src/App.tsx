@@ -6,15 +6,19 @@ import { useTaskEvents } from "@/hooks/use-task-events";
 import { useTheme } from "@/hooks/use-theme";
 import { DashboardPage } from "@/pages/dashboard-page";
 import { HistoryPage } from "@/pages/history-page";
+import { DownloadPage } from "@/pages/download-page";
 import { SettingsPage } from "@/pages/settings-page";
 import { TasksPage } from "@/pages/tasks-page";
+import { UploadPage } from "@/pages/upload-page";
 import { WatchersPage } from "@/pages/watchers-page";
 import { useAppStore } from "@/store/app-store";
 
 const views = {
   dashboard: DashboardPage,
-  tasks: TasksPage,
+  upload: UploadPage,
+  download: DownloadPage,
   watchers: WatchersPage,
+  tasks: TasksPage,
   history: HistoryPage,
   settings: SettingsPage,
 };

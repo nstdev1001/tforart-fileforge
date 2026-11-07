@@ -57,6 +57,7 @@ function folderNameFromPath(path: string): string {
 export function TaskCard({ task }: { task: Task }) {
   const [controlBusy, setControlBusy] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [copied, setCopied] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [missingFolderPath, setMissingFolderPath] = useState<string | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -71,6 +72,8 @@ export function TaskCard({ task }: { task: Task }) {
   const canRetry =
     task.status === "failed" && !isWatcherAggregate && !isWatcherChildTask(task);
   const displayProgress = task.status === "completed" ? 100 : task.progress;
+  const showCopyLink =
+    task.status === "completed" && task.kind === "compress-upload" && Boolean(task.driveWebViewLink);
   const trackedFolderName = isWatcherAggregate ? folderNameFromPath(task.sourcePath) : undefined;
   const driveFolderName = task.driveFolderName ?? "Unknown folder";
 
@@ -119,6 +122,8 @@ export function TaskCard({ task }: { task: Task }) {
     setActionError(null);
     try {
       await navigator.clipboard.writeText(task.driveWebViewLink);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1800);
     } catch (error) {
       setActionError(error instanceof Error ? error.message : String(error));
     }
@@ -297,6 +302,21 @@ export function TaskCard({ task }: { task: Task }) {
             </div>
             <span className="ml-3 shrink-0">{formatRelativeTime(task.updatedAt)}</span>
           </div>
+          {showCopyLink ? (
+            <div className="mt-3 flex justify-end border-t border-border/60 pt-3">
+              <Button variant="outline" size="sm" className="h-7" onClick={copyShareLink}>
+                {copied ? <Check className="size-3" /> : <Copy className="size-3" />}
+                {copied ? "Copied" : "Copy link"}
+              </Button>
+            </div>
+          ) : null}
+          {task.status === "completed" && task.kind === "download-extract" && task.destinationPath ? (
+            <div className="mt-3 flex justify-end border-t border-border/60 pt-3">
+              <Button variant="outline" size="sm" className="h-7" disabled={controlBusy} onClick={openDestinationFolder}>
+                <FolderOpen className="size-3" /> Show in folder
+              </Button>
+            </div>
+          ) : null}
           {(canTogglePause || canRetry) ? (
             <div className="mt-3 flex justify-end gap-2 border-t border-border/60 pt-3">
               {canTogglePause ? (

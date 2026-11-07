@@ -2,28 +2,29 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import {
+  ArrowRight,
   Clock3,
+  Cloud,
   Copy,
   Eye,
   FolderOpen,
+  HardDrive,
   LoaderCircle,
   Pause,
   Pencil,
   Play,
-  Plus,
   Telescope,
   Trash2,
-  UploadCloud,
-  X,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useForm } from "react-hook-form";
 import { z } from "zod";
 
+import { PanelArrow, PanelFlow, PanelTitle } from "@/components/tasks/form-panel";
 import { DriveFolderPicker, type DriveFolderSelection } from "@/components/google/drive-folder-picker";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { mergeRecordsByUpdatedAt } from "@/lib/record-utils";
 import {
@@ -77,7 +78,6 @@ const statusVariant: Record<WatcherStatus, "info" | "warning" | "neutral" | "dan
 export function WatchersPage() {
   const removeTask = useAppStore((state) => state.removeTask);
   const [watchers, setWatchers] = useState<FolderWatcher[]>([]);
-  const [showForm, setShowForm] = useState(false);
   const [showDrivePicker, setShowDrivePicker] = useState(false);
   const [driveFolderName, setDriveFolderName] = useState("My Drive");
   const [nativeError, setNativeError] = useState<string | null>(null);
@@ -188,7 +188,6 @@ export function WatchersPage() {
       reset();
       setDriveFolderName("My Drive");
       setShowExtensionPicker(false);
-      setShowForm(false);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       setNativeError(message);
@@ -256,54 +255,25 @@ export function WatchersPage() {
   }
 
   return (
-    <div className="space-y-5">
-      <div className="flex items-center justify-between gap-3">
-        <div>
-          <p className="text-sm font-semibold">Folder automation</p>
-          <p className="mt-1 text-xs text-muted-foreground">Stable matching files enter the shared upload queue automatically.</p>
-        </div>
-        <Button onClick={() => {
-          setShowForm((value) => !value);
-          setShowExtensionPicker(false);
-          setShowDrivePicker(false);
-        }}>
-          {showForm ? <X className="size-4" /> : <Plus className="size-4" />}
-          {showForm ? "Close" : "Add watcher"}
-        </Button>
-      </div>
-
-      {showForm ? (
-        <Card>
-          <CardHeader className="border-b border-border/70">
-            <CardTitle className="flex items-center gap-2"><Telescope className="size-4 text-primary" /> New folder watcher</CardTitle>
-            <CardDescription>Monitoring stops after 30 seconds without a new matching file, then waits for queued uploads.</CardDescription>
-          </CardHeader>
-          <CardContent className="pt-5">
-            <form className="grid gap-4 sm:grid-cols-2" onSubmit={handleSubmit(submit)}>
-              <label className="space-y-2 text-xs font-semibold">
-                Name
-                <Input placeholder="Render output" {...register("name")} />
-              </label>
-              <div className="space-y-2 text-xs font-semibold">
-                <label htmlFor="watcher-drive-destination">Google Drive destination</label>
-                <div className="flex gap-2">
-                  <Input id="watcher-drive-destination" readOnly value={driveFolderName} />
-                  <Button type="button" variant="outline" onClick={() => setShowDrivePicker(true)}>
-                    <FolderOpen className="size-4" /> Browse Drive
-                  </Button>
-                </div>
-                <input type="hidden" {...register("driveFolderId")} />
-                {errors.driveFolderId ? <span className="block font-normal text-red-600">{errors.driveFolderId.message}</span> : null}
+    <div className="flex h-full min-h-0 flex-col gap-6">
+      <form className="shrink-0 space-y-4" onSubmit={handleSubmit(submit)}>
+        <PanelFlow>
+          <section className="space-y-4 bg-card p-5">
+            <PanelTitle step="1" icon={<HardDrive className="size-4" />} title="Local" hint="Choose the folder to watch and which files to pick up." />
+            <label className="block space-y-2 text-xs font-semibold">
+              Name
+              <Input placeholder="Render output" {...register("name")} />
+            </label>
+            <label className="block space-y-2 text-xs font-semibold">
+              Local folder
+              <div className="flex gap-2">
+                <Input readOnly value={selectedPath} placeholder="Choose a folder to watch" className="min-w-0 flex-1" />
+                <Button type="button" variant="outline" onClick={chooseFolder}><FolderOpen className="size-4" /> Browse</Button>
               </div>
-              <label className="space-y-2 text-xs font-semibold sm:col-span-2">
-                Local folder
-                <div className="flex gap-2">
-                  <Input readOnly value={selectedPath} placeholder="Choose a folder to watch" />
-                  <Button type="button" variant="outline" onClick={chooseFolder}><FolderOpen className="size-4" /> Browse</Button>
-                </div>
-                <input type="hidden" {...register("localPath")} />
-                {errors.localPath ? <span className="block font-normal text-red-600">{errors.localPath.message}</span> : null}
-              </label>
+              <input type="hidden" {...register("localPath")} />
+              {errors.localPath ? <span className="block font-normal text-red-600">{errors.localPath.message}</span> : null}
+            </label>
+            <div className="grid gap-4 sm:grid-cols-[1fr_1.4fr]">
               <label className="space-y-2 text-xs font-semibold">
                 Stability delay (seconds)
                 <Input type="number" min={1} max={10} {...register("settlingDelaySeconds", { valueAsNumber: true })} />
@@ -381,14 +351,41 @@ export function WatchersPage() {
                 </div>
                 {errors.extensions ? <span className="block font-normal text-red-600">{errors.extensions.message}</span> : null}
               </div>
-              <div className="flex justify-end sm:col-span-2">
-                <Button type="submit" disabled={isSubmitting}>{isSubmitting ? <LoaderCircle className="size-4 animate-spin" /> : <Eye className="size-4" />}{isSubmitting ? "Starting..." : "Start watching"}</Button>
-              </div>
-            </form>
-          </CardContent>
-        </Card>
-      ) : null}
+            </div>
+          </section>
 
+          <PanelArrow icon={<ArrowRight className="size-6" />} />
+
+          <section className="space-y-4 bg-card p-5">
+            <PanelTitle step="2" icon={<Cloud className="size-4" />} title="Google Drive" hint="Choose where detected files will be uploaded." />
+            <div className="space-y-2 text-xs font-semibold">
+              <label htmlFor="watcher-drive-destination">Google Drive destination</label>
+              <div className="flex gap-2">
+                <Input id="watcher-drive-destination" readOnly value={driveFolderName} className="min-w-0 flex-1" />
+                <Button type="button" variant="outline" onClick={() => setShowDrivePicker(true)}>
+                  <FolderOpen className="size-4" /> Browse Drive
+                </Button>
+              </div>
+              <input type="hidden" {...register("driveFolderId")} />
+              {errors.driveFolderId ? <span className="block font-normal text-red-600">{errors.driveFolderId.message}</span> : null}
+            </div>
+            <p className="flex items-center gap-2 bg-muted/60 px-3 py-2.5 text-[11px] text-muted-foreground">
+              <Telescope className="size-3.5 shrink-0 text-primary" /> Stable matching files enter the shared upload queue automatically. Monitoring stops after 30 seconds without a new matching file, then waits for queued uploads.
+            </p>
+          </section>
+        </PanelFlow>
+
+        <div className="flex justify-end">
+          <Button type="submit" disabled={isSubmitting}>{isSubmitting ? <LoaderCircle className="size-4 animate-spin" /> : <Eye className="size-4" />}{isSubmitting ? "Starting..." : "Start watching"}</Button>
+        </div>
+      </form>
+
+      <section aria-label="Folder watchers" className="flex min-h-0 flex-1 flex-col gap-3">
+        <div className="flex shrink-0 items-center justify-between border-b border-border pb-2">
+          <h2 className="text-sm font-semibold">Tracked folders</h2>
+          <span className="text-xs text-muted-foreground">{watchers.length}</span>
+        </div>
+        <div className="min-h-0 flex-1 space-y-4 overflow-y-auto pr-1">
       {nativeError ? <p className="rounded-xl border border-red-500/20 bg-red-500/10 px-4 py-3 text-xs text-red-700 dark:text-red-300">{nativeError}</p> : null}
 
       {watchers.length ? (
@@ -429,15 +426,12 @@ export function WatchersPage() {
           ))}
         </div>
       ) : (
-        <Card className="grid min-h-[420px] place-items-center border-dashed bg-card/60 text-center">
-          <div className="max-w-sm px-6">
-            <div className="mx-auto grid size-14 place-items-center rounded-2xl bg-primary/10 text-primary"><UploadCloud className="size-6" /></div>
-            <h2 className="mt-4 font-semibold">No folder watchers</h2>
-            <p className="mt-2 text-sm leading-relaxed text-muted-foreground">Create one to detect stable render files and upload them automatically.</p>
-            <Button className="mt-5" onClick={() => setShowForm(true)}><Plus className="size-4" /> Add watcher</Button>
-          </div>
-        </Card>
+        <p className="border border-dashed border-border px-4 py-8 text-center text-xs text-muted-foreground">
+          No folder watchers yet. Set one up above to detect stable files and upload them automatically.
+        </p>
       )}
+        </div>
+      </section>
 
       <DriveFolderPicker
         open={showDrivePicker}

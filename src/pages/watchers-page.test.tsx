@@ -119,7 +119,6 @@ describe("WatchersPage", () => {
     render(<WatchersPage />);
     await waitFor(() => expect(listWatchers).toHaveBeenCalledOnce());
 
-    await user.click(screen.getAllByRole("button", { name: "Add watcher" })[0]);
     await user.click(screen.getByRole("button", { name: "Browse" }));
     await waitFor(() => {
       expect(screen.getByPlaceholderText("Choose a folder to watch"))
@@ -139,7 +138,6 @@ describe("WatchersPage", () => {
     const user = userEvent.setup();
 
     render(<WatchersPage />);
-    await user.click(screen.getAllByRole("button", { name: "Add watcher" })[0]);
 
     expect(screen.getByLabelText("Included extensions")).toHaveAttribute("readonly");
     await user.click(screen.getByRole("button", { name: "Edit included extensions" }));
@@ -157,7 +155,6 @@ describe("WatchersPage", () => {
     const user = userEvent.setup();
 
     render(<WatchersPage />);
-    await user.click(screen.getAllByRole("button", { name: "Add watcher" })[0]);
     await user.click(screen.getByRole("button", { name: "Browse" }));
     await user.click(screen.getByRole("button", { name: "Edit included extensions" }));
     await user.click(screen.getByRole("checkbox", { name: ".mov" }));
@@ -187,7 +184,6 @@ describe("WatchersPage", () => {
     const user = userEvent.setup();
 
     render(<WatchersPage />);
-    await user.click(screen.getAllByRole("button", { name: "Add watcher" })[0]);
     await user.click(screen.getByRole("button", { name: "Browse Drive" }));
     await user.click(await screen.findByRole("button", { name: "Final renders" }));
     expect(await screen.findByText("This folder is empty")).toBeInTheDocument();

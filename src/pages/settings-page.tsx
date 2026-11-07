@@ -157,13 +157,13 @@ export function SettingsPage() {
               aria-label="Use maximum bandwidth"
               onClick={() => setValue("maximumBandwidth", !maximumBandwidth, { shouldDirty: true })}
               className={cn(
-                "relative h-6 w-11 shrink-0 rounded-full border transition-colors",
+                "relative h-6 w-11 shrink-0 rounded-none border transition-colors",
                 maximumBandwidth ? "border-primary bg-primary" : "border-border bg-muted",
               )}
             >
               <span
                 className={cn(
-                  "absolute left-0.5 top-0.5 size-4.5 rounded-full bg-white shadow-sm transition-transform",
+                  "absolute left-0.5 top-0.5 size-4.5 rounded-none bg-white shadow-sm transition-transform",
                   maximumBandwidth ? "translate-x-5" : "translate-x-0",
                 )}
               />

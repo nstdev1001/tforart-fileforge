@@ -2,11 +2,13 @@ import {
   ChevronLeft,
   ChevronRight,
   Cloud,
+  CloudOff,
   File,
   Folder,
   FolderCheck,
   FolderPlus,
   LoaderCircle,
+  LogIn,
   RefreshCw,
   Search,
   X,
@@ -16,7 +18,12 @@ import { createPortal } from "react-dom";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { createGoogleDriveFolder, listGoogleDriveFolder } from "@/lib/tauri";
+import {
+  connectGoogleDrive,
+  createGoogleDriveFolder,
+  disconnectGoogleDrive,
+  listGoogleDriveFolder,
+} from "@/lib/tauri";
 import { formatBytes } from "@/lib/utils";
 import type { DriveFile } from "@/types/drive";
 
@@ -45,6 +52,9 @@ export function DriveFolderPicker({ open, onClose, onSelect }: DriveFolderPicker
   const [newFolderName, setNewFolderName] = useState("");
   const [creatingFolder, setCreatingFolder] = useState(false);
   const [createFolderError, setCreateFolderError] = useState<string | null>(null);
+  const [authLost, setAuthLost] = useState(false);
+  const [needsReconnect, setNeedsReconnect] = useState(false);
+  const [authBusy, setAuthBusy] = useState<"reset" | "connect" | null>(null);
   const dialogRef = useRef<HTMLDivElement>(null);
   const requestIdRef = useRef(0);
   const onCloseRef = useRef(onClose);
@@ -66,6 +76,7 @@ export function DriveFolderPicker({ open, onClose, onSelect }: DriveFolderPicker
     const requestId = ++requestIdRef.current;
     setLoading(true);
     setError(null);
+    setAuthLost(false);
     if (!append) {
       setItems([]);
       setNextPageToken(undefined);
@@ -79,7 +90,9 @@ export function DriveFolderPicker({ open, onClose, onSelect }: DriveFolderPicker
       setNextPageToken(page.nextPageToken);
     } catch (reason) {
       if (requestId !== requestIdRef.current) return;
-      setError(toMessage(reason));
+      const message = toMessage(reason);
+      setError(message);
+      if (isAuthError(message)) setAuthLost(true);
       if (!append) setItems([]);
     } finally {
       if (requestId === requestIdRef.current) setLoading(false);
@@ -102,6 +115,8 @@ export function DriveFolderPicker({ open, onClose, onSelect }: DriveFolderPicker
     setShowNewFolderForm(false);
     setNewFolderName("");
     setCreateFolderError(null);
+    setNeedsReconnect(false);
+    setAuthBusy(null);
     void loadFolder(ROOT_FOLDER.id);
 
     window.requestAnimationFrame(() => {
@@ -157,6 +172,33 @@ export function DriveFolderPicker({ open, onClose, onSelect }: DriveFolderPicker
       setCreateFolderError(toMessage(reason));
     } finally {
       setCreatingFolder(false);
+    }
+  }
+
+  async function resetSession() {
+    setAuthBusy("reset");
+    try {
+      await disconnectGoogleDrive();
+    } catch {
+      // The stored session is already unusable; continue to the reconnect prompt.
+    }
+    setAuthBusy(null);
+    setError(null);
+    setNeedsReconnect(true);
+  }
+
+  async function reconnect() {
+    setAuthBusy("connect");
+    setError(null);
+    try {
+      await connectGoogleDrive();
+      setNeedsReconnect(false);
+      setAuthBusy(null);
+      setPath([ROOT_FOLDER]);
+      void loadFolder(ROOT_FOLDER.id);
+    } catch (reason) {
+      setAuthBusy(null);
+      setError(toMessage(reason));
     }
   }
 
@@ -319,13 +361,35 @@ export function DriveFolderPicker({ open, onClose, onSelect }: DriveFolderPicker
         </div>
 
         <div className="min-h-64 flex-1 overflow-y-auto p-3" aria-live="polite">
-          {error ? (
+          {needsReconnect ? (
             <div className="grid min-h-56 place-items-center px-6 text-center">
               <div>
-                <p className="text-sm font-semibold">Could not load this folder</p>
+                <CloudOff className="mx-auto size-8 text-muted-foreground/60" />
+                <p className="mt-3 text-sm font-semibold">Google Drive is disconnected</p>
+                <p className="mt-1 text-xs text-muted-foreground">The old session was signed out. Connect to sign in again.</p>
+                {error ? <p role="alert" className="mt-2 text-xs text-red-600 dark:text-red-300">{error}</p> : null}
+                <Button className="mt-4" type="button" size="sm" disabled={authBusy !== null} onClick={() => void reconnect()}>
+                  {authBusy === "connect" ? <LoaderCircle className="size-3.5 animate-spin" /> : <LogIn className="size-3.5" />}
+                  {authBusy === "connect" ? "Waiting for browser" : "Connect Google Drive"}
+                </Button>
+              </div>
+            </div>
+          ) : error ? (
+            <div className="grid min-h-56 place-items-center px-6 text-center">
+              <div>
+                <p className="text-sm font-semibold">{authLost ? "Google Drive connection lost" : "Could not load this folder"}</p>
                 <p role="alert" className="mt-1 text-xs text-red-600 dark:text-red-300">{error}</p>
-                <Button className="mt-4" type="button" variant="outline" size="sm" onClick={() => void loadFolder(currentFolder.id)}>
-                  <RefreshCw className="size-3.5" /> Try again
+                {authLost ? <p className="mt-1 text-xs text-muted-foreground">Try again to sign out the old session and connect a new one.</p> : null}
+                <Button
+                  className="mt-4"
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={authBusy !== null}
+                  onClick={() => (authLost ? void resetSession() : void loadFolder(currentFolder.id))}
+                >
+                  {authBusy === "reset" ? <LoaderCircle className="size-3.5 animate-spin" /> : <RefreshCw className="size-3.5" />}
+                  Try again
                 </Button>
               </div>
             </div>
@@ -392,7 +456,7 @@ export function DriveFolderPicker({ open, onClose, onSelect }: DriveFolderPicker
           </p>
           <div className="flex gap-2">
             <Button type="button" variant="ghost" onClick={onClose}>Cancel</Button>
-            <Button type="button" disabled={loading || creatingFolder || Boolean(error)} onClick={() => onSelect(currentFolder)}>
+            <Button type="button" disabled={loading || creatingFolder || Boolean(error) || needsReconnect} onClick={() => onSelect(currentFolder)}>
               <FolderCheck className="size-4" /> Choose this folder
             </Button>
           </div>
@@ -409,4 +473,8 @@ function toMessage(error: unknown) {
     : error instanceof Error
       ? error.message
       : "An unexpected Google Drive error occurred.";
+}
+
+function isAuthError(message: string) {
+  return /invalid_grant|expired or revoked|token exchange failed|not connected|not signed in|unauthenticated|unauthorized|401|reconnect/i.test(message);
 }

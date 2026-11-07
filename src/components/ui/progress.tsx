@@ -21,10 +21,10 @@ export function Progress({
       aria-valuemax={100}
       aria-valuenow={safeValue}
       role="progressbar"
-      className={cn("h-1.5 w-full overflow-hidden rounded-full bg-muted", className)}
+      className={cn("h-1.5 w-full overflow-hidden rounded-none bg-muted", className)}
     >
       <div
-        className={cn("h-full rounded-full bg-primary transition-all", indicatorClassName)}
+        className={cn("h-full rounded-none bg-primary transition-all", indicatorClassName)}
         style={{ width: `${safeValue}%` }}
       />
     </div>

@@ -3,7 +3,16 @@
 @custom-variant dark (&:where(.dark, .dark *));
 
 @theme inline {
-  --font-sans: "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+  --font-sans: "Lexend", "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+  --radius-xs: 0;
+  --radius-sm: 0;
+  --radius-md: 0;
+  --radius-lg: 0;
+  --radius-xl: 0;
+  --radius-2xl: 0;
+  --radius-3xl: 0;
+  --radius-4xl: 0;
+  --color-field: var(--field);
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --color-card: var(--card);
@@ -28,41 +37,49 @@
   background: var(--background);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
-  --background: #f6f7f3;
-  --foreground: #172019;
-  --card: #ffffff;
-  --card-foreground: #172019;
-  --primary: #326b4c;
-  --primary-foreground: #ffffff;
-  --secondary: #e8ece5;
-  --secondary-foreground: #26362b;
-  --muted: #edf0eb;
-  --muted-foreground: #69756d;
-  --accent: #e2ebe4;
-  --accent-foreground: #234430;
-  --destructive: #c34141;
-  --border: #dde2dc;
-  --input: #d5dcd5;
-  --ring: #4b7d60;
+  color-scheme: light;
+  --background: oklch(0.99 0.006 160);
+  --foreground: oklch(0.2 0.03 160);
+  --card: oklch(0.965 0.016 160);
+  --card-foreground: oklch(0.2 0.03 160);
+  --primary: oklch(0.52 0.13 160);
+  --primary-foreground: oklch(0.99 0.005 160);
+  --secondary: oklch(0.95 0.02 160);
+  --secondary-foreground: oklch(0.26 0.04 160);
+  --muted: oklch(0.945 0.018 160);
+  --muted-foreground: oklch(0.5 0.03 160);
+  --accent: oklch(0.92 0.035 160);
+  --accent-foreground: oklch(0.3 0.07 160);
+  --field: oklch(0.94 0.02 160);
+  --destructive: oklch(0.577 0.245 27.325);
+  --border: oklch(0.89 0.03 160);
+  --input: oklch(0.86 0.035 160);
+  --ring: oklch(0.6 0.12 160);
+  --grid-line: oklch(0.52 0.13 160 / 0.09);
+  --grid-glow: oklch(0.85 0.1 160 / 0.35);
 }
 
 .dark {
-  --background: #111512;
-  --foreground: #edf2ed;
-  --card: #181d19;
-  --card-foreground: #edf2ed;
-  --primary: #77b58d;
-  --primary-foreground: #102117;
-  --secondary: #242b25;
-  --secondary-foreground: #e3e9e3;
-  --muted: #232923;
-  --muted-foreground: #9da79f;
-  --accent: #263229;
-  --accent-foreground: #dcf0e2;
-  --destructive: #db5b5b;
-  --border: #2a332c;
-  --input: #344038;
-  --ring: #77b58d;
+  color-scheme: dark;
+  --background: oklch(0.15 0.015 160);
+  --foreground: oklch(0.96 0.015 160);
+  --card: oklch(0.19 0.02 160);
+  --card-foreground: oklch(0.96 0.015 160);
+  --primary: oklch(0.75 0.15 160);
+  --primary-foreground: oklch(0.15 0.03 160);
+  --secondary: oklch(0.24 0.025 160);
+  --secondary-foreground: oklch(0.95 0.015 160);
+  --muted: oklch(0.22 0.02 160);
+  --muted-foreground: oklch(0.7 0.03 160);
+  --accent: oklch(0.27 0.04 160);
+  --accent-foreground: oklch(0.95 0.03 160);
+  --field: oklch(0.225 0.022 160);
+  --destructive: oklch(0.704 0.191 22.216);
+  --border: oklch(0.75 0.15 160 / 0.2);
+  --input: oklch(0.75 0.15 160 / 0.26);
+  --ring: oklch(0.75 0.15 160);
+  --grid-line: oklch(0.75 0.15 160 / 0.08);
+  --grid-glow: oklch(0.45 0.12 160 / 0.3);
 }
 
 * {
@@ -81,9 +98,18 @@ body,
 
 body {
   overflow: hidden;
-  background:
-    radial-gradient(circle at 72% -15%, color-mix(in srgb, var(--primary) 11%, transparent), transparent 30rem),
-    var(--background);
+  background-color: var(--background);
+  background-image:
+    radial-gradient(60% 50% at 8% 0%, var(--grid-glow), transparent 70%),
+    linear-gradient(var(--grid-line) 1px, transparent 1px),
+    linear-gradient(90deg, var(--grid-line) 1px, transparent 1px);
+  background-size: auto, 32px 32px, 32px 32px;
+  background-attachment: fixed;
+}
+
+::selection {
+  background: var(--primary);
+  color: var(--primary-foreground);
 }
 
 button,
@@ -103,7 +129,7 @@ button {
 
 ::-webkit-scrollbar-thumb {
   border: 3px solid transparent;
-  border-radius: 999px;
+  border-radius: 0;
   background: color-mix(in srgb, var(--muted-foreground) 42%, transparent);
   background-clip: padding-box;
 }

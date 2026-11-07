@@ -161,7 +161,7 @@ export function HistoryPage() {
             <ol className="relative ml-2 border-l border-border/80">
               {logs.map((log) => (
                 <li key={log.id} className="relative pb-5 pl-6 last:pb-0">
-                  <span className={cn("absolute -left-1 top-1 size-2 rounded-full ring-4 ring-card", levelTone[log.level])} />
+                  <span className={cn("absolute -left-1 top-1 size-2 rounded-none ring-4 ring-card", levelTone[log.level])} />
                   <div className="flex flex-wrap items-center gap-2">
                     <code className="text-[11px] font-semibold text-primary">{log.event}</code>
                     <span className="text-[10px] uppercase tracking-wide text-muted-foreground">{log.level}</span>

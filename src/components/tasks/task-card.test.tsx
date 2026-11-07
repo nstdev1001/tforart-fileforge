@@ -111,7 +111,7 @@ describe("TaskCard", () => {
     expect(screen.getByTitle(task.sourcePath)).toHaveClass("truncate");
   });
 
-  it("moves the upload copy action into the task menu", async () => {
+  it("offers a visible copy link button and a menu action for completed uploads", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, "clipboard", {
       configurable: true,
@@ -122,11 +122,14 @@ describe("TaskCard", () => {
 
     render(<TaskCard task={task} />);
 
-    expect(screen.queryByRole("button", { name: "Copy link" })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Copy link" }));
+    expect(writeText).toHaveBeenCalledTimes(1);
+    expect(await screen.findByRole("button", { name: "Copied" })).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: `More options for ${task.name}` }));
     expect(screen.getByRole("menu", { name: `Task actions for ${task.name}` })).toBeInTheDocument();
     await userEvent.click(screen.getByRole("menuitem", { name: "Copy link" }));
 
+    expect(writeText).toHaveBeenCalledTimes(2);
     expect(writeText).toHaveBeenCalledWith(task.driveWebViewLink);
     expect(screen.queryByRole("menu")).not.toBeInTheDocument();
   });

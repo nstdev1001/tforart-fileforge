@@ -1,13 +1,13 @@
 import { zodResolver } from "@hookform/resolvers/zod";
-import { Archive, Folder, FolderOpen, LoaderCircle, ShieldCheck, Wrench, X } from "lucide-react";
+import { ArrowRight, Archive, Cloud, FolderOpen, HardDrive, LoaderCircle, ShieldCheck, Wrench } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
 import { z } from "zod";
 
 import { DriveFolderPicker, type DriveFolderSelection } from "@/components/google/drive-folder-picker";
 import { SevenZipSetupDialog } from "@/components/settings/seven-zip-setup-dialog";
+import { PanelArrow, PanelFlow, PanelTitle } from "@/components/tasks/form-panel";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { isMissingSevenZipError, toErrorMessage, unavailableSevenZipStatus } from "@/lib/seven-zip";
 import {
@@ -104,76 +104,73 @@ export function NewCompressUploadForm({ onClose }: { onClose: () => void }) {
 
   return (
     <>
-      <Card className="border-primary/20 shadow-md">
-      <CardHeader className="flex-row items-start justify-between border-b border-border/70">
-        <div>
-          <CardTitle className="flex items-center gap-2"><Archive className="size-4 text-primary" /> Compress folder & upload ZIP</CardTitle>
-          <CardDescription>Tforart FileForge checks disk space, creates a temporary ZIP, and uploads it in resumable chunks.</CardDescription>
-        </div>
-        <Button type="button" variant="ghost" size="icon" className="size-8" onClick={onClose} aria-label="Close form"><X className="size-4" /></Button>
-      </CardHeader>
-      <CardContent className="pt-5">
-        <form className="grid gap-4" onSubmit={handleSubmit(submit)}>
-          <div className="grid gap-4 lg:grid-cols-[1.4fr_1fr]">
-            <label className="space-y-2 text-xs font-semibold">
-              Source folder
+      <form className="space-y-4" onSubmit={handleSubmit(submit)}>
+        <PanelFlow>
+          <section className="space-y-4 bg-card p-5">
+            <PanelTitle step="1" icon={<HardDrive className="size-4" />} title="Local" hint="Choose what to compress on this computer." />
+            <div className="space-y-2 text-xs font-semibold">
+              <label htmlFor="upload-source">Source folder</label>
               <div className="flex gap-2">
-                <Input readOnly value={sourcePath} placeholder="Choose a local folder" className="flex-1" />
+                <Input id="upload-source" readOnly value={sourcePath} placeholder="Choose a local folder" className="min-w-0 flex-1" />
                 <Button type="button" variant="outline" onClick={chooseFolder}><FolderOpen className="size-4" /> Browse</Button>
               </div>
               {errors.sourcePath ? <span className="block font-normal text-red-600">{errors.sourcePath.message}</span> : null}
-            </label>
-            <label className="space-y-2 text-xs font-semibold">
+            </div>
+            <label className="block space-y-2 text-xs font-semibold">
               ZIP filename
               <Input placeholder="project-export.zip" {...register("archiveName")} />
             </label>
-          </div>
+            <div className="flex flex-wrap items-center gap-2 bg-muted/60 px-3 py-2.5 text-[11px] text-muted-foreground">
+              <Archive className="size-3.5 shrink-0 text-primary" />
+              <span className="min-w-0 flex-1 truncate">
+                {sevenZip === null
+                  ? "Checking 7-Zip..."
+                  : sevenZip.available
+                    ? sevenZip.version ?? sevenZip.path ?? "7-Zip ready"
+                    : "7-Zip is not configured"}
+              </span>
+              {sevenZip !== null && !sevenZip.available ? (
+                <Button type="button" variant="outline" size="sm" className="h-7" onClick={() => setSevenZipDialogOpen(true)}>
+                  <Wrench className="size-3" /> Set up
+                </Button>
+              ) : null}
+            </div>
+          </section>
 
-          <div className="grid gap-4 lg:grid-cols-[1fr_auto] lg:items-end">
+          <PanelArrow icon={<ArrowRight className="size-6" />} />
+
+          <section className="space-y-4 bg-card p-5">
+            <PanelTitle step="2" icon={<Cloud className="size-4" />} title="Google Drive" hint="Choose where the ZIP will be uploaded." />
             <div className="space-y-2 text-xs font-semibold">
               <label htmlFor="upload-drive-destination">Google Drive destination</label>
               <div className="flex gap-2">
-                <Input id="upload-drive-destination" readOnly value={driveFolderName} />
+                <Input id="upload-drive-destination" readOnly value={driveFolderName} className="min-w-0 flex-1" />
                 <Button type="button" variant="outline" onClick={() => setShowDrivePicker(true)}>
                   <FolderOpen className="size-4" /> Browse Drive
                 </Button>
               </div>
               <input type="hidden" {...register("driveFolderId")} />
             </div>
-            <label className="flex h-10 items-center gap-2 rounded-xl border border-border px-3 text-xs font-medium">
+            <label className="flex h-10 items-center gap-2 border border-border bg-background/60 px-3 text-xs font-medium">
               <input type="checkbox" className="size-4 accent-[var(--primary)]" {...register("makePublic")} />
               Anyone with link can view
             </label>
-          </div>
+            <p className="flex items-center gap-2 bg-muted/60 px-3 py-2.5 text-[11px] text-muted-foreground">
+              <ShieldCheck className="size-3.5 shrink-0 text-primary" /> Temporary ZIP is deleted after a successful upload.
+            </p>
+          </section>
+        </PanelFlow>
 
-          <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl bg-muted/45 px-3.5 py-3 text-[11px] text-muted-foreground">
-            <span className="flex items-center gap-2"><ShieldCheck className="size-4 text-primary" /> Temporary ZIP is deleted after a successful upload.</span>
-            <span className="flex items-center gap-2">
-              <Folder className="size-4" />
-              {sevenZip === null
-                ? "Checking 7-Zip..."
-                : sevenZip.available
-                  ? sevenZip.version ?? sevenZip.path ?? "7-Zip ready"
-                  : "7-Zip is not configured"}
-              {sevenZip !== null && !sevenZip.available ? (
-                <Button type="button" variant="outline" size="sm" className="h-7" onClick={() => setSevenZipDialogOpen(true)}>
-                  <Wrench className="size-3" /> Set up
-                </Button>
-              ) : null}
-            </span>
-          </div>
-          {error ? <p role="alert" className="rounded-lg bg-red-500/10 px-3 py-2 text-xs text-red-700 dark:text-red-300">{error}</p> : null}
+        {error ? <p role="alert" className="bg-red-500/10 px-3 py-2 text-xs text-red-700 dark:text-red-300">{error}</p> : null}
 
-          <div className="flex justify-end gap-2">
-            <Button type="button" variant="ghost" onClick={onClose}>Cancel</Button>
-            <Button type="submit" disabled={isSubmitting || !sevenZip?.available}>
-              {isSubmitting ? <LoaderCircle className="size-4 animate-spin" /> : <Archive className="size-4" />}
-              {isSubmitting ? "Starting..." : "Compress & upload"}
-            </Button>
-          </div>
-        </form>
-      </CardContent>
-      </Card>
+        <div className="flex justify-end gap-2">
+          <Button type="button" variant="ghost" onClick={onClose}>Cancel</Button>
+          <Button type="submit" disabled={isSubmitting || !sevenZip?.available}>
+            {isSubmitting ? <LoaderCircle className="size-4 animate-spin" /> : <Archive className="size-4" />}
+            {isSubmitting ? "Starting..." : "Compress & upload"}
+          </Button>
+        </div>
+      </form>
       <DriveFolderPicker
         open={showDrivePicker}
         onClose={() => setShowDrivePicker(false)}

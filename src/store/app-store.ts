@@ -4,7 +4,7 @@ import { persist } from "zustand/middleware";
 import { mergeRecordsByUpdatedAt } from "@/lib/record-utils";
 import type { Task } from "@/types/task";
 
-export type AppView = "dashboard" | "tasks" | "watchers" | "history" | "settings";
+export type AppView = "dashboard" | "upload" | "download" | "watchers" | "tasks" | "history" | "settings";
 export type Theme = "light" | "dark" | "system";
 
 interface AppState {

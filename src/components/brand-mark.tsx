@@ -6,7 +6,7 @@ export function BrandMark({ compact = false }: { compact?: boolean }) {
     return (
       <div
         aria-label="Tforart FileForge"
-        className="grid size-9 shrink-0 place-items-center rounded-xl overflow-hidden shadow-sm"
+        className="grid size-9 shrink-0 place-items-center overflow-hidden"
         role="img"
       >
         <img
@@ -22,7 +22,7 @@ export function BrandMark({ compact = false }: { compact?: boolean }) {
     <div className="flex h-9 items-center gap-2.5">
       <img
         alt="Tforart FileForge Icon"
-        className="size-8 shrink-0 rounded-lg object-contain shadow-xs"
+        className="size-8 shrink-0 object-contain"
         src={appIcon}
       />
       <img

@@ -1,8 +1,6 @@
 import { ClipboardList, Download, UploadCloud } from "lucide-react";
 import { useState } from "react";
 
-import { NewCompressUploadForm } from "@/components/tasks/new-compress-upload-form";
-import { NewDownloadExtractForm } from "@/components/tasks/new-download-extract-form";
 import { TaskCard } from "@/components/tasks/task-card";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -13,14 +11,12 @@ type Filter = "all" | TaskStatus;
 
 export function TasksPage() {
   const tasks = useAppStore((state) => state.tasks);
+  const setActiveView = useAppStore((state) => state.setActiveView);
   const [filter, setFilter] = useState<Filter>("all");
-  const [newTaskKind, setNewTaskKind] = useState<"upload" | "download" | null>(null);
   const filteredTasks = filter === "all" ? tasks : tasks.filter((task) => task.status === filter);
 
   return (
     <div className="space-y-5">
-      {newTaskKind === "upload" ? <NewCompressUploadForm onClose={() => setNewTaskKind(null)} /> : null}
-      {newTaskKind === "download" ? <NewDownloadExtractForm onClose={() => setNewTaskKind(null)} /> : null}
       <div className="flex items-center justify-between gap-3">
         <div className="flex flex-wrap gap-1 rounded-xl border border-border bg-card p-1">
           {(["all", ...TASK_STATUSES] as Filter[]).map((status) => (
@@ -30,8 +26,8 @@ export function TasksPage() {
           ))}
         </div>
         <div className="flex gap-2">
-          <Button variant="outline" onClick={() => setNewTaskKind("download")}><Download className="size-4" /> Download & extract</Button>
-          <Button onClick={() => setNewTaskKind("upload")}><UploadCloud className="size-4" /> Compress & upload</Button>
+          <Button variant="outline" onClick={() => setActiveView("download")}><Download className="size-4" /> Download & extract</Button>
+          <Button onClick={() => setActiveView("upload")}><UploadCloud className="size-4" /> Compress & upload</Button>
         </div>
       </div>
 

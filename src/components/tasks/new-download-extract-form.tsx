@@ -1,11 +1,11 @@
 import { zodResolver } from "@hookform/resolvers/zod";
-import { Archive, Download, FolderOpen, LoaderCircle, ShieldCheck, Wrench, X } from "lucide-react";
+import { Archive, ArrowRight, Cloud, Download, FolderOpen, HardDrive, LoaderCircle, ShieldCheck, Wrench } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
 import { z } from "zod";
 
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { PanelArrow, PanelFlow, PanelTitle } from "@/components/tasks/form-panel";
 import { Input } from "@/components/ui/input";
 import { SevenZipSetupDialog } from "@/components/settings/seven-zip-setup-dialog";
 import { isMissingSevenZipError, toErrorMessage, unavailableSevenZipStatus } from "@/lib/seven-zip";
@@ -80,56 +80,64 @@ export function NewDownloadExtractForm({ onClose }: { onClose: () => void }) {
   }
 
   return (
-    <Card className="border-sky-500/20 shadow-md">
-      <CardHeader className="flex-row items-start justify-between border-b border-border/70">
-        <div>
-          <CardTitle className="flex items-center gap-2"><Download className="size-4 text-sky-600" /> Download ZIP & extract</CardTitle>
-          <CardDescription>Validate a Drive link, download its ZIP safely, extract it, and open the result.</CardDescription>
-        </div>
-        <Button type="button" variant="ghost" size="icon" className="size-8" onClick={onClose} aria-label="Close form"><X className="size-4" /></Button>
-      </CardHeader>
-      <CardContent className="pt-5">
-        <form className="grid gap-4" onSubmit={handleSubmit(submit)}>
-          <label className="space-y-2 text-xs font-semibold">
-            Google Drive ZIP link or file ID
-            <Input placeholder="https://drive.google.com/file/d/.../view" {...register("driveLinkOrId")} />
-            {errors.driveLinkOrId ? <span className="block font-normal text-red-600">{errors.driveLinkOrId.message}</span> : null}
-          </label>
-          <label className="space-y-2 text-xs font-semibold">
-            Extraction destination
-            <div className="flex gap-2">
-              <Input readOnly value={destinationPath} placeholder="Choose a local destination folder" className="flex-1" />
-              <Button type="button" variant="outline" onClick={chooseDestination}><FolderOpen className="size-4" /> Browse</Button>
+    <>
+      <form className="space-y-4" onSubmit={handleSubmit(submit)}>
+        <PanelFlow>
+          <section className="space-y-4 bg-card p-5">
+            <PanelTitle step="1" icon={<Cloud className="size-4" />} title="Google Drive" hint="Paste the link of the ZIP you want to download." />
+            <label className="block space-y-2 text-xs font-semibold">
+              Google Drive ZIP link or file ID
+              <Input placeholder="https://drive.google.com/file/d/.../view" {...register("driveLinkOrId")} />
+              {errors.driveLinkOrId ? <span className="block font-normal text-red-600">{errors.driveLinkOrId.message}</span> : null}
+            </label>
+            <p className="flex items-center gap-2 bg-muted/60 px-3 py-2.5 text-[11px] text-muted-foreground">
+              <ShieldCheck className="size-3.5 shrink-0 text-primary" /> Unsafe archive paths are rejected before extraction.
+            </p>
+          </section>
+
+          <PanelArrow icon={<ArrowRight className="size-6" />} />
+
+          <section className="space-y-4 bg-card p-5">
+            <PanelTitle step="2" icon={<HardDrive className="size-4" />} title="Local" hint="Choose where to extract on this computer." />
+            <div className="space-y-2 text-xs font-semibold">
+              <label htmlFor="extract-destination">Extraction destination</label>
+              <div className="flex gap-2">
+                <Input id="extract-destination" readOnly value={destinationPath} placeholder="Choose a local destination folder" className="min-w-0 flex-1" />
+                <Button type="button" variant="outline" onClick={chooseDestination}><FolderOpen className="size-4" /> Browse</Button>
+              </div>
+              {errors.destinationPath ? <span className="block font-normal text-red-600">{errors.destinationPath.message}</span> : null}
             </div>
-            {errors.destinationPath ? <span className="block font-normal text-red-600">{errors.destinationPath.message}</span> : null}
-          </label>
-          <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl bg-muted/45 px-3.5 py-3 text-[11px] text-muted-foreground">
-            <span className="flex items-center gap-2"><ShieldCheck className="size-4 text-primary" /> Unsafe archive paths are rejected before extraction.</span>
-            <label className="flex items-center gap-2 font-medium text-foreground"><input type="checkbox" className="size-4 accent-[var(--primary)]" {...register("createSubfolder")} /> Create a new subfolder</label>
-            <span className="flex items-center gap-2">
-              <Archive className="size-4" />
-              {sevenZip === null
-                ? "Checking 7-Zip..."
-                : sevenZip.available
-                  ? sevenZip.version ?? sevenZip.path ?? "7-Zip ready"
-                  : "7-Zip is not configured"}
+            <label className="flex h-10 items-center gap-2 border border-border bg-background/60 px-3 text-xs font-medium">
+              <input type="checkbox" className="size-4 accent-[var(--primary)]" {...register("createSubfolder")} />
+              Create a new subfolder
+            </label>
+            <div className="flex flex-wrap items-center gap-2 bg-muted/60 px-3 py-2.5 text-[11px] text-muted-foreground">
+              <Archive className="size-3.5 shrink-0 text-primary" />
+              <span className="min-w-0 flex-1 truncate">
+                {sevenZip === null
+                  ? "Checking 7-Zip..."
+                  : sevenZip.available
+                    ? sevenZip.version ?? sevenZip.path ?? "7-Zip ready"
+                    : "7-Zip is not configured"}
+              </span>
               {sevenZip !== null && !sevenZip.available ? (
                 <Button type="button" variant="outline" size="sm" className="h-7" onClick={() => setSevenZipDialogOpen(true)}>
                   <Wrench className="size-3" /> Set up
                 </Button>
               ) : null}
-            </span>
-          </div>
-          {error ? <p role="alert" className="rounded-lg bg-red-500/10 px-3 py-2 text-xs text-red-700 dark:text-red-300">{error}</p> : null}
-          <div className="flex justify-end gap-2">
-            <Button type="button" variant="ghost" onClick={onClose}>Cancel</Button>
-            <Button type="submit" disabled={isSubmitting || sevenZip?.available !== true}>
-              {isSubmitting ? <LoaderCircle className="size-4 animate-spin" /> : <Download className="size-4" />}
-              {isSubmitting ? "Validating..." : "Download & extract"}
-            </Button>
-          </div>
-        </form>
-      </CardContent>
+            </div>
+          </section>
+        </PanelFlow>
+
+        {error ? <p role="alert" className="bg-red-500/10 px-3 py-2 text-xs text-red-700 dark:text-red-300">{error}</p> : null}
+        <div className="flex justify-end gap-2">
+          <Button type="button" variant="ghost" onClick={onClose}>Cancel</Button>
+          <Button type="submit" disabled={isSubmitting || sevenZip?.available !== true}>
+            {isSubmitting ? <LoaderCircle className="size-4 animate-spin" /> : <Download className="size-4" />}
+            {isSubmitting ? "Validating..." : "Download & extract"}
+          </Button>
+        </div>
+      </form>
       <SevenZipSetupDialog
         open={sevenZipDialogOpen}
         currentPath={sevenZip?.path}
@@ -137,6 +145,6 @@ export function NewDownloadExtractForm({ onClose }: { onClose: () => void }) {
         onClose={() => setSevenZipDialogOpen(false)}
         onReady={handleSevenZipReady}
       />
-    </Card>
+    </>
   );
 }

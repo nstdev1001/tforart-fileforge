@@ -147,7 +147,7 @@ export function GoogleDriveSettings() {
 
         {connection ? (
           <div className="flex items-center gap-3 rounded-xl border border-primary/15 bg-primary/[0.05] p-3.5">
-            {connection.user.photoLink ? <img src={connection.user.photoLink} alt="" className="size-9 rounded-full" referrerPolicy="no-referrer" /> : <div className="grid size-9 place-items-center rounded-full bg-primary/10 text-xs font-semibold text-primary">G</div>}
+            {connection.user.photoLink ? <img src={connection.user.photoLink} alt="" className="size-9 rounded-none" referrerPolicy="no-referrer" /> : <div className="grid size-9 place-items-center rounded-none bg-primary/10 text-xs font-semibold text-primary">G</div>}
             <div className="min-w-0 flex-1">
               <p className="truncate text-xs font-semibold">{connection.user.displayName}</p>
               <p className="truncate text-[11px] text-muted-foreground">{connection.user.emailAddress}</p>
